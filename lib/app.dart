@@ -14,6 +14,7 @@ import 'screens/platos/platos_screen.dart';
 import 'screens/platos/plato_form_screen.dart';
 import 'screens/platos/plato_detail_screen.dart';
 import 'services/auth_service.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 
 // ============================================================
 // COLORES — Paleta mockups StockGourmet
@@ -86,6 +87,15 @@ class StockGourmetApp extends ConsumerWidget {
       title: 'StockGourmet',
       debugShowCheckedModeBanner: false,
       routerConfig: router,
+        localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: const [
+        Locale('es', 'ES'),
+        Locale('en', 'US'),
+      ],
       theme: ThemeData(
         useMaterial3: true,
         scaffoldBackgroundColor: SGColors.background,
