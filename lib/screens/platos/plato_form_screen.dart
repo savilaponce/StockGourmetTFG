@@ -120,8 +120,8 @@ class _PlatoFormScreenState extends ConsumerState<PlatoFormScreen> {
         await platoService.update(widget.platoId!, plato);
         platoId = widget.platoId!;
       } else {
-        final created = await platoService.create(plato);
-        platoId = created.id!;
+        final createdId = await platoService.create(plato);
+        platoId = createdId;
       }
 
       // Guardar ingredientes del plato

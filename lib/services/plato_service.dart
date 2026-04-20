@@ -48,29 +48,38 @@ class PlatoService {
     return (data as List).first as Map<String, dynamic>;
   }
 
-  /// Crear nuevo plato
-  Future<Plato> create(Plato plato) async {
+  /// Crear nuevo plato — devuelve el ID del plato creado
+  Future<String> create(Plato plato) async {
     final profile = await _ref.read(currentProfileProvider.future);
-    final data = await _supabase
+    final restauranteId = profile!.restauranteId;
+
+    // Insert sin .select() para evitar conflicto con RLS
+    await _supabase
         .from('platos')
         .insert({
           ...plato.toJson(),
-          'restaurante_id': profile!.restauranteId,
-        })
-        .select()
+          'restaurante_id': restauranteId,
+        });
+
+    // Buscar el plato recién creado por nombre y restaurante
+    final data = await _supabase
+        .from('platos')
+        .select('id')
+        .eq('restaurante_id', restauranteId)
+        .eq('nombre', plato.nombre)
+        .order('created_at', ascending: false)
+        .limit(1)
         .single();
-    return Plato.fromJson(data);
+
+    return data['id'] as String;
   }
 
   /// Actualizar plato
-  Future<Plato> update(String id, Plato plato) async {
-    final data = await _supabase
+  Future<void> update(String id, Plato plato) async {
+    await _supabase
         .from('platos')
         .update(plato.toJson())
-        .eq('id', id)
-        .select()
-        .single();
-    return Plato.fromJson(data);
+        .eq('id', id);
   }
 
   /// Eliminar plato (soft delete)
