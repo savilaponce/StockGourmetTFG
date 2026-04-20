@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import '../../models/models.dart';
 import '../../services/ingrediente_service.dart';
 import '../../services/plato_service.dart';
+import '../../services/proveedor_service.dart';
 import '../../utils/constants.dart';
 
 class IngredienteFormScreen extends ConsumerStatefulWidget {
@@ -25,11 +26,11 @@ class _IngredienteFormScreenState extends ConsumerState<IngredienteFormScreen> {
   final _stockCtrl = TextEditingController(text: '0');
   final _stockMinCtrl = TextEditingController(text: '0');
   final _costeCtrl = TextEditingController(text: '0');
-  final _proveedorCtrl = TextEditingController();
   final _notasCtrl = TextEditingController();
 
   String _categoria = 'otros';
   String _unidad = 'kg';
+  String? _proveedorSeleccionado;
   DateTime? _fechaCaducidad;
   bool _loading = false;
   bool _initialized = false;
@@ -51,7 +52,7 @@ class _IngredienteFormScreenState extends ConsumerState<IngredienteFormScreen> {
       _stockCtrl.text = ing.stockActual.toString();
       _stockMinCtrl.text = ing.stockMinimo.toString();
       _costeCtrl.text = ing.costePorUnidad.toString();
-      _proveedorCtrl.text = ing.proveedor ?? '';
+      _proveedorSeleccionado = ing.proveedor;
       _notasCtrl.text = ing.notas ?? '';
       _categoria = ing.categoria;
       _unidad = ing.unidad;
@@ -81,9 +82,7 @@ class _IngredienteFormScreenState extends ConsumerState<IngredienteFormScreen> {
         stockMinimo: double.tryParse(_stockMinCtrl.text) ?? 0,
         unidad: _unidad,
         costePorUnidad: double.tryParse(_costeCtrl.text) ?? 0,
-        proveedor: _proveedorCtrl.text.trim().isEmpty
-            ? null
-            : _proveedorCtrl.text.trim(),
+        proveedor: _proveedorSeleccionado,
         fechaCaducidad: _fechaCaducidad,
         notas: _notasCtrl.text.trim().isEmpty ? null : _notasCtrl.text.trim(),
       );
@@ -168,6 +167,7 @@ class _IngredienteFormScreenState extends ConsumerState<IngredienteFormScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final proveedoresAsync = ref.watch(proveedoresProvider);
 
     if (widget.isEditing && _loading && !_initialized) {
       return Scaffold(
@@ -330,13 +330,39 @@ class _IngredienteFormScreenState extends ConsumerState<IngredienteFormScreen> {
               ),
               const SizedBox(height: 16),
 
-              // Proveedor
-              TextFormField(
-                controller: _proveedorCtrl,
-                decoration: const InputDecoration(
-                  labelText: 'Proveedor',
-                  prefixIcon: Icon(Icons.local_shipping_outlined),
-                  hintText: 'Ej: Frutas García S.L.',
+              // Proveedor — Dropdown con lista de proveedores predefinidos
+              proveedoresAsync.when(
+                data: (proveedores) => DropdownButtonFormField<String>(
+                  value: proveedores.any((p) => p.nombre == _proveedorSeleccionado)
+                      ? _proveedorSeleccionado
+                      : null,
+                  decoration: const InputDecoration(
+                    labelText: 'Proveedor',
+                    prefixIcon: Icon(Icons.local_shipping_outlined),
+                  ),
+                  hint: const Text('Seleccionar proveedor'),
+                  isExpanded: true,
+                  items: [
+                    const DropdownMenuItem<String>(
+                      value: null,
+                      child: Text('Sin proveedor', style: TextStyle(color: Colors.grey)),
+                    ),
+                    ...proveedores.map((p) => DropdownMenuItem(
+                      value: p.nombre,
+                      child: Text(p.nombre),
+                    )),
+                  ],
+                  onChanged: (v) => setState(() => _proveedorSeleccionado = v),
+                ),
+                loading: () => const LinearProgressIndicator(),
+                error: (_, __) => TextFormField(
+                  initialValue: _proveedorSeleccionado,
+                  decoration: const InputDecoration(
+                    labelText: 'Proveedor',
+                    prefixIcon: Icon(Icons.local_shipping_outlined),
+                    hintText: 'Ej: Frutas García S.L.',
+                  ),
+                  onChanged: (v) => _proveedorSeleccionado = v.trim().isEmpty ? null : v.trim(),
                 ),
               ),
               const SizedBox(height: 16),
@@ -387,7 +413,6 @@ class _IngredienteFormScreenState extends ConsumerState<IngredienteFormScreen> {
     _stockCtrl.dispose();
     _stockMinCtrl.dispose();
     _costeCtrl.dispose();
-    _proveedorCtrl.dispose();
     _notasCtrl.dispose();
     super.dispose();
   }

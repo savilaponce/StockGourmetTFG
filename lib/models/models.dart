@@ -280,3 +280,168 @@ class PlatoIngrediente {
   /// Coste de esta línea (cantidad × coste unitario)
   double get costeLinea => cantidad * (costeUnitario ?? 0);
 }
+
+// ============================================================
+// PEDIDO
+// ============================================================
+class Pedido {
+  final String? id;
+  final String? restauranteId;
+  final String proveedor;
+  final String estado; // pendiente, enviado, recibido, cancelado
+  final String? notas;
+  final DateTime fechaPedido;
+  final DateTime? fechaEntregaEstimada;
+  final DateTime? fechaRecibido;
+  final double costeTotal;
+  final int? numLineas;
+
+  Pedido({
+    this.id,
+    this.restauranteId,
+    required this.proveedor,
+    this.estado = 'pendiente',
+    this.notas,
+    DateTime? fechaPedido,
+    this.fechaEntregaEstimada,
+    this.fechaRecibido,
+    this.costeTotal = 0,
+    this.numLineas,
+  }) : fechaPedido = fechaPedido ?? DateTime.now();
+
+  factory Pedido.fromJson(Map<String, dynamic> json) => Pedido(
+    id: json['id'],
+    restauranteId: json['restaurante_id'],
+    proveedor: json['proveedor'] ?? '',
+    estado: json['estado'] ?? 'pendiente',
+    notas: json['notas'],
+    fechaPedido: DateTime.parse(json['fecha_pedido'] ?? json['created_at']),
+    fechaEntregaEstimada: json['fecha_entrega_estimada'] != null
+        ? DateTime.parse(json['fecha_entrega_estimada'])
+        : null,
+    fechaRecibido: json['fecha_recibido'] != null
+        ? DateTime.parse(json['fecha_recibido'])
+        : null,
+    costeTotal: (json['coste_total'] as num?)?.toDouble() ?? 0,
+    numLineas: json['num_lineas'] as int?,
+  );
+
+  Map<String, dynamic> toJson() => {
+    'proveedor': proveedor,
+    'estado': estado,
+    'notas': notas,
+    'fecha_entrega_estimada': fechaEntregaEstimada?.toIso8601String().split('T').first,
+  };
+
+  bool get isPendiente => estado == 'pendiente';
+  bool get isEnviado => estado == 'enviado';
+  bool get isRecibido => estado == 'recibido';
+  bool get isCancelado => estado == 'cancelado';
+
+  String get estadoLabel => switch (estado) {
+    'pendiente' => 'Pendiente',
+    'enviado' => 'Enviado',
+    'recibido' => 'Recibido',
+    'cancelado' => 'Cancelado',
+    _ => estado,
+  };
+}
+
+// ============================================================
+// PEDIDO LINEA
+// ============================================================
+class PedidoLinea {
+  final String? id;
+  final String? pedidoId;
+  final String? ingredienteId;
+  final String nombreProducto;
+  final double cantidad;
+  final String unidad;
+  final double precioUnitario;
+  final double? precioTotal;
+  final bool recibido;
+
+  PedidoLinea({
+    this.id,
+    this.pedidoId,
+    this.ingredienteId,
+    required this.nombreProducto,
+    required this.cantidad,
+    this.unidad = 'kg',
+    this.precioUnitario = 0,
+    this.precioTotal,
+    this.recibido = false,
+  });
+
+  factory PedidoLinea.fromJson(Map<String, dynamic> json) => PedidoLinea(
+    id: json['id'],
+    pedidoId: json['pedido_id'],
+    ingredienteId: json['ingrediente_id'],
+    nombreProducto: json['nombre_producto'] ?? '',
+    cantidad: (json['cantidad'] as num).toDouble(),
+    unidad: json['unidad'] ?? 'kg',
+    precioUnitario: (json['precio_unitario'] as num?)?.toDouble() ?? 0,
+    precioTotal: (json['precio_total'] as num?)?.toDouble(),
+    recibido: json['recibido'] ?? false,
+  );
+
+  Map<String, dynamic> toJson() => {
+    'pedido_id': pedidoId,
+    'ingrediente_id': ingredienteId,
+    'nombre_producto': nombreProducto,
+    'cantidad': cantidad,
+    'unidad': unidad,
+    'precio_unitario': precioUnitario,
+  };
+
+  double get costeLinea => cantidad * precioUnitario;
+}
+// ============================================================
+// PROVEEDOR
+// Añadir al FINAL de lib/models/models.dart
+// ============================================================
+class Proveedor {
+  final String? id;
+  final String? restauranteId;
+  final String nombre;
+  final String? contacto;
+  final String? telefono;
+  final String? email;
+  final String? direccion;
+  final String? notas;
+  final bool activo;
+
+  Proveedor({
+    this.id,
+    this.restauranteId,
+    required this.nombre,
+    this.contacto,
+    this.telefono,
+    this.email,
+    this.direccion,
+    this.notas,
+    this.activo = true,
+  });
+
+  factory Proveedor.fromJson(Map<String, dynamic> json) => Proveedor(
+    id: json['id'],
+    restauranteId: json['restaurante_id'],
+    nombre: json['nombre'],
+    contacto: json['contacto'],
+    telefono: json['telefono'],
+    email: json['email'],
+    direccion: json['direccion'],
+    notas: json['notas'],
+    activo: json['activo'] ?? true,
+  );
+
+  Map<String, dynamic> toJson() => {
+    'nombre': nombre,
+    'contacto': contacto,
+    'telefono': telefono,
+    'email': email,
+    'direccion': direccion,
+    'notas': notas,
+    'activo': activo,
+  };
+}

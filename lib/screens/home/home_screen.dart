@@ -10,7 +10,7 @@ import '../../services/ingrediente_service.dart';
 import '../../utils/formatters.dart';
 
 // ============================================================
-// HOME SCREEN — Shell con 4 tabs como los mockups
+// HOME SCREEN — Shell con 5 tabs: Inicio, Inventario, Pedidos, Alertas, Ajustes
 // ============================================================
 class HomeScreen extends ConsumerWidget {
   final Widget child;
@@ -21,8 +21,9 @@ class HomeScreen extends ConsumerWidget {
     final location = GoRouterState.of(context).matchedLocation;
     final currentIndex = switch (location) {
       '/inventario' => 1,
-      '/alertas' => 2,
-      '/ajustes' => 3,
+      '/pedidos' => 2,
+      '/alertas' => 3,
+      '/ajustes' => 4,
       _ => 0,
     };
 
@@ -33,8 +34,9 @@ class HomeScreen extends ConsumerWidget {
         onDestinationSelected: (i) {
           final route = switch (i) {
             1 => '/inventario',
-            2 => '/alertas',
-            3 => '/ajustes',
+            2 => '/pedidos',
+            3 => '/alertas',
+            4 => '/ajustes',
             _ => '/',
           };
           context.go(route);
@@ -51,6 +53,11 @@ class HomeScreen extends ConsumerWidget {
             label: 'Inventario',
           ),
           NavigationDestination(
+            icon: Icon(Icons.local_shipping_outlined),
+            selectedIcon: Icon(Icons.local_shipping),
+            label: 'Pedidos',
+          ),
+          NavigationDestination(
             icon: Icon(Icons.notifications_outlined),
             selectedIcon: Icon(Icons.notifications),
             label: 'Alertas',
@@ -65,6 +72,7 @@ class HomeScreen extends ConsumerWidget {
     );
   }
 }
+
 
 // ============================================================
 // DASHBOARD TAB — Diseño mockup: KPI cards + alertas + botón escanear

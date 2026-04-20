@@ -103,16 +103,19 @@ class AjustesScreen extends ConsumerWidget {
                 onTap: () => context.push('/platos'),
               ),
               _SettingsTile(
+                icon: Icons.local_shipping_outlined,
+                label: 'Gestión de pedidos',
+                onTap: () => context.push('/pedidos'),
+              ),
+              _SettingsTile(
+                icon: Icons.business_outlined,
+                label: 'Proveedores',
+                onTap: () => context.push('/proveedores'),
+              ),
+              _SettingsTile(
                 icon: Icons.people_outline,
                 label: 'Gestión de personal',
-                onTap: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Gestión de personal próximamente'),
-                      backgroundColor: SGColors.primary,
-                    ),
-                  );
-                },
+                onTap: () => context.push('/personal'),
               ),
             ],
           ),

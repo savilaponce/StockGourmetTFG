@@ -8,17 +8,19 @@ import 'screens/auth/register_screen.dart';
 import 'screens/home/home_screen.dart';
 import 'screens/home/alertas_screen.dart';
 import 'screens/home/ajustes_screen.dart';
+import 'screens/home/personal_screen.dart';
 import 'screens/inventario/inventario_screen.dart';
 import 'screens/inventario/ingrediente_form_screen.dart';
 import 'screens/platos/platos_screen.dart';
 import 'screens/platos/plato_form_screen.dart';
 import 'screens/platos/plato_detail_screen.dart';
+import 'screens/pedidos/pedidos_screen.dart';
+import 'screens/pedidos/pedido_form_screen.dart';
+import 'screens/pedidos/pedido_detail_screen.dart';
+import 'screens/proveedores/proveedores_screen.dart';
 import 'services/auth_service.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
-// ============================================================
-// COLORES — Paleta mockups StockGourmet
-// ============================================================
 class SGColors {
   SGColors._();
   static const Color primary = Color(0xFF2EC4B6);
@@ -37,15 +39,11 @@ class SGColors {
   static const Color border = Color(0xFFE5E7EB);
 }
 
-// ============================================================
-// ROUTER
-// ============================================================
 final routerProvider = Provider<GoRouter>((ref) {
   final authState = ref.watch(authStateProvider);
   return GoRouter(
     initialLocation: '/login',
     redirect: (context, state) {
-      // authState.value es el AuthState (siempre existe), comprobamos la SESSION
       final session = authState.value?.session;
       final isLoggedIn = session != null;
       final isAuthRoute = state.matchedLocation == '/login' || state.matchedLocation == '/register';
@@ -61,6 +59,7 @@ final routerProvider = Provider<GoRouter>((ref) {
         routes: [
           GoRoute(path: '/', pageBuilder: (c, s) => const NoTransitionPage(child: DashboardTab())),
           GoRoute(path: '/inventario', pageBuilder: (c, s) => const NoTransitionPage(child: InventarioScreen())),
+          GoRoute(path: '/pedidos', pageBuilder: (c, s) => const NoTransitionPage(child: PedidosScreen())),
           GoRoute(path: '/alertas', pageBuilder: (c, s) => const NoTransitionPage(child: AlertasScreen())),
           GoRoute(path: '/ajustes', pageBuilder: (c, s) => const NoTransitionPage(child: AjustesScreen())),
         ],
@@ -71,13 +70,14 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/plato/editar/:id', builder: (c, s) => PlatoFormScreen(platoId: s.pathParameters['id'])),
       GoRoute(path: '/plato/:id', builder: (c, s) => PlatoDetailScreen(platoId: s.pathParameters['id']!)),
       GoRoute(path: '/platos', builder: (c, s) => const PlatosScreen()),
+      GoRoute(path: '/personal', builder: (c, s) => const PersonalScreen()),
+      GoRoute(path: '/pedido/nuevo', builder: (c, s) => const PedidoFormScreen()),
+      GoRoute(path: '/pedido/:id', builder: (c, s) => PedidoDetailScreen(pedidoId: s.pathParameters['id']!)),
+      GoRoute(path: '/proveedores', builder: (c, s) => const ProveedoresScreen()),
     ],
   );
 });
 
-// ============================================================
-// TEMA
-// ============================================================
 class StockGourmetApp extends ConsumerWidget {
   const StockGourmetApp({super.key});
   @override
@@ -87,7 +87,7 @@ class StockGourmetApp extends ConsumerWidget {
       title: 'StockGourmet',
       debugShowCheckedModeBanner: false,
       routerConfig: router,
-        localizationsDelegates: const [
+      localizationsDelegates: const [
         GlobalMaterialLocalizations.delegate,
         GlobalWidgetsLocalizations.delegate,
         GlobalCupertinoLocalizations.delegate,
@@ -100,24 +100,19 @@ class StockGourmetApp extends ConsumerWidget {
         useMaterial3: true,
         scaffoldBackgroundColor: SGColors.background,
         colorScheme: ColorScheme.fromSeed(
-          seedColor: SGColors.primary,
-          brightness: Brightness.light,
-          primary: SGColors.primary,
-          secondary: SGColors.orange,
-          surface: SGColors.surface,
-          error: SGColors.red,
+          seedColor: SGColors.primary, brightness: Brightness.light,
+          primary: SGColors.primary, secondary: SGColors.orange,
+          surface: SGColors.surface, error: SGColors.red,
         ),
         textTheme: GoogleFonts.poppinsTextTheme(),
         appBarTheme: AppBarTheme(
           centerTitle: false, elevation: 0, scrolledUnderElevation: 0,
-          backgroundColor: SGColors.surface,
-          foregroundColor: SGColors.textPrimary,
+          backgroundColor: SGColors.surface, foregroundColor: SGColors.textPrimary,
           titleTextStyle: GoogleFonts.poppins(fontSize: 22, fontWeight: FontWeight.w700, color: SGColors.textPrimary),
         ),
         cardTheme: CardThemeData(elevation: 0, color: SGColors.surface, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
         navigationBarTheme: NavigationBarThemeData(
-          backgroundColor: SGColors.surface, elevation: 8,
-          indicatorColor: SGColors.primaryLight,
+          backgroundColor: SGColors.surface, elevation: 8, indicatorColor: SGColors.primaryLight,
           labelTextStyle: WidgetStateProperty.resolveWith((states) {
             final sel = states.contains(WidgetState.selected);
             return GoogleFonts.poppins(fontSize: 12, fontWeight: sel ? FontWeight.w600 : FontWeight.w400, color: sel ? SGColors.primary : SGColors.textHint);
