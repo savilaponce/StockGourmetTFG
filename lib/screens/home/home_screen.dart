@@ -8,6 +8,7 @@ import '../../services/auth_service.dart';
 import '../../services/plato_service.dart';
 import '../../services/ingrediente_service.dart';
 import '../../utils/formatters.dart';
+import '../../widgets/badge_alertas.dart';
 
 // ============================================================
 // HOME SCREEN — Shell con 5 tabs: Inicio, Inventario, Pedidos, Alertas, Ajustes
@@ -23,6 +24,7 @@ class HomeScreen extends ConsumerWidget {
       '/inventario' => 1,
       '/pedidos' => 2,
       '/alertas' => 3,
+      '/mas' => 4,
       '/ajustes' => 4,
       _ => 0,
     };
@@ -36,7 +38,7 @@ class HomeScreen extends ConsumerWidget {
             1 => '/inventario',
             2 => '/pedidos',
             3 => '/alertas',
-            4 => '/ajustes',
+            4 => '/mas',
             _ => '/',
           };
           context.go(route);
@@ -58,14 +60,14 @@ class HomeScreen extends ConsumerWidget {
             label: 'Pedidos',
           ),
           NavigationDestination(
-            icon: Icon(Icons.notifications_outlined),
-            selectedIcon: Icon(Icons.notifications),
+            icon: BadgeAlertas(child: Icon(Icons.notifications_outlined)),
+            selectedIcon: BadgeAlertas(child: Icon(Icons.notifications)),
             label: 'Alertas',
           ),
           NavigationDestination(
-            icon: Icon(Icons.settings_outlined),
-            selectedIcon: Icon(Icons.settings),
-            label: 'Ajustes',
+            icon: Icon(Icons.apps_outlined),
+            selectedIcon: Icon(Icons.apps),
+            label: 'Más',
           ),
         ],
       ),
@@ -121,6 +123,10 @@ class DashboardTab extends ConsumerWidget {
         child: ListView(
           padding: const EdgeInsets.all(20),
           children: [
+            // === BARRA DE BÚSQUEDA ===
+            _SearchBar(onTap: () => context.push('/buscar')),
+            const SizedBox(height: 20),
+
             // === KPI CARDS (como mockup: Stock Actual, Próximos a Caducar, Stock Mínimo) ===
             statsAsync.when(
               data: (stats) => Column(
@@ -178,15 +184,7 @@ class DashboardTab extends ConsumerWidget {
               width: double.infinity,
               height: 56,
               child: ElevatedButton.icon(
-                onPressed: () {
-                  // TODO: Fase 2 — Escáner de albaranes
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Escáner disponible próximamente'),
-                      backgroundColor: SGColors.primary,
-                    ),
-                  );
-                },
+                onPressed: () => context.push('/albaran/scanner'),
                 icon: const Icon(Icons.document_scanner_outlined, size: 22),
                 label: const Text('Escanear Albarán'),
                 style: ElevatedButton.styleFrom(
@@ -200,15 +198,43 @@ class DashboardTab extends ConsumerWidget {
             ),
             const SizedBox(height: 24),
 
-            // === ACCESO RÁPIDO A PLATOS ===
-            _SectionHeader(
-              title: 'Gestión rápida',
-              trailing: TextButton(
-                onPressed: () => context.push('/platos'),
-                child: const Text('Ver platos',
-                    style: TextStyle(color: SGColors.primary)),
-              ),
+            // === SECCIÓN: GESTIÓN ===
+            const _SectionHeader(title: 'Gestión'),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: _ManagementCard(
+                    icon: Icons.restaurant_menu,
+                    label: 'Platos',
+                    color: SGColors.primary,
+                    onTap: () => context.push('/platos'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _ManagementCard(
+                    icon: Icons.business_outlined,
+                    label: 'Proveedores',
+                    color: SGColors.orange,
+                    onTap: () => context.push('/proveedores'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _ManagementCard(
+                    icon: Icons.people_outline,
+                    label: 'Personal',
+                    color: const Color(0xFF6366F1),
+                    onTap: () => context.push('/personal'),
+                  ),
+                ),
+              ],
             ),
+            const SizedBox(height: 20),
+
+            // === ACCIONES RÁPIDAS ===
+            const _SectionHeader(title: 'Acciones rápidas'),
             const SizedBox(height: 8),
             Row(
               children: [
@@ -466,6 +492,73 @@ class _QuickActionCard extends StatelessWidget {
   }
 }
 
+// ============================================================
+// _ManagementCard — tarjeta cuadrada para acceso a las áreas
+// principales de gestión (Platos, Proveedores, Personal)
+// ============================================================
+class _ManagementCard extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _ManagementCard({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: SGColors.surface,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 10),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: SGColors.border),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.03),
+                blurRadius: 8,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Column(
+            children: [
+              Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(icon, color: color, size: 24),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                label,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: SGColors.textPrimary,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _SectionHeader extends StatelessWidget {
   final String title;
   final Widget? trailing;
@@ -588,6 +681,51 @@ class _ErrorCard extends StatelessWidget {
                 style: const TextStyle(color: SGColors.red, fontSize: 13)),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ============================================================
+// BARRA DE BÚSQUEDA (cabecera del dashboard)
+// No tiene foco propio; al pulsarla navega a /buscar
+// ============================================================
+class _SearchBar extends StatelessWidget {
+  final VoidCallback onTap;
+  const _SearchBar({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: SGColors.surface,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: SGColors.border),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.search,
+                  size: 20, color: SGColors.textSecondary),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Buscar ingredientes, platos, proveedores...',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Colors.grey.shade500,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

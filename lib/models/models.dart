@@ -445,3 +445,321 @@ class Proveedor {
     'activo': activo,
   };
 }
+
+// ============================================================
+// ALERTA — fila de la vista v_alertas
+// ============================================================
+enum TipoAlerta {
+  caducidadVencida,
+  caducidadCritica,
+  caducidadProxima,
+  stockCritico,
+  stockBajo,
+  desconocido,
+}
+
+extension TipoAlertaX on TipoAlerta {
+  static TipoAlerta fromString(String? raw) {
+    switch (raw) {
+      case 'caducidad_vencida':
+        return TipoAlerta.caducidadVencida;
+      case 'caducidad_critica':
+        return TipoAlerta.caducidadCritica;
+      case 'caducidad_proxima':
+        return TipoAlerta.caducidadProxima;
+      case 'stock_critico':
+        return TipoAlerta.stockCritico;
+      case 'stock_bajo':
+        return TipoAlerta.stockBajo;
+      default:
+        return TipoAlerta.desconocido;
+    }
+  }
+
+  bool get esCaducidad =>
+      this == TipoAlerta.caducidadVencida ||
+      this == TipoAlerta.caducidadCritica ||
+      this == TipoAlerta.caducidadProxima;
+
+  bool get esStock =>
+      this == TipoAlerta.stockCritico || this == TipoAlerta.stockBajo;
+}
+
+class Alerta {
+  final String ingredienteId;
+  final String restauranteId;
+  final String nombre;
+  final String categoria;
+  final String unidad;
+  final double stockActual;
+  final double stockMinimo;
+  final DateTime? fechaCaducidad;
+  final int? diasRestantes;
+  final TipoAlerta tipo;
+  final int severidad;
+
+  Alerta({
+    required this.ingredienteId,
+    required this.restauranteId,
+    required this.nombre,
+    required this.categoria,
+    required this.unidad,
+    required this.stockActual,
+    required this.stockMinimo,
+    this.fechaCaducidad,
+    this.diasRestantes,
+    required this.tipo,
+    required this.severidad,
+  });
+
+  factory Alerta.fromJson(Map<String, dynamic> json) => Alerta(
+        ingredienteId: json['ingrediente_id'] as String,
+        restauranteId: json['restaurante_id'] as String,
+        nombre: json['nombre'] as String,
+        categoria: json['categoria'] ?? 'otros',
+        unidad: json['unidad'] ?? 'kg',
+        stockActual: (json['stock_actual'] as num?)?.toDouble() ?? 0,
+        stockMinimo: (json['stock_minimo'] as num?)?.toDouble() ?? 0,
+        fechaCaducidad: json['fecha_caducidad'] != null
+            ? DateTime.parse(json['fecha_caducidad'])
+            : null,
+        diasRestantes: (json['dias_restantes'] as num?)?.toInt(),
+        tipo: TipoAlertaX.fromString(json['tipo'] as String?),
+        severidad: (json['severidad'] as num?)?.toInt() ?? 3,
+      );
+
+  String get titulo {
+    switch (tipo) {
+      case TipoAlerta.caducidadVencida:
+        return 'Caducado';
+      case TipoAlerta.caducidadCritica:
+        return 'Caduca pronto';
+      case TipoAlerta.caducidadProxima:
+        return 'Próximo a caducar';
+      case TipoAlerta.stockCritico:
+        return 'Sin stock';
+      case TipoAlerta.stockBajo:
+        return 'Stock bajo';
+      case TipoAlerta.desconocido:
+        return 'Aviso';
+    }
+  }
+
+  String get mensaje {
+    switch (tipo) {
+      case TipoAlerta.caducidadVencida:
+        final d = (diasRestantes ?? 0).abs();
+        return "'$nombre' caducó hace $d ${d == 1 ? 'día' : 'días'}";
+      case TipoAlerta.caducidadCritica:
+      case TipoAlerta.caducidadProxima:
+        final d = diasRestantes ?? 0;
+        if (d == 0) return "'$nombre' caduca hoy";
+        if (d == 1) return "'$nombre' caduca mañana";
+        return "'$nombre' caduca en $d días";
+      case TipoAlerta.stockCritico:
+        return "'$nombre' sin stock (necesita reposición)";
+      case TipoAlerta.stockBajo:
+        return "'$nombre': $stockActual $unidad disponibles "
+            "(mínimo: $stockMinimo $unidad)";
+      case TipoAlerta.desconocido:
+        return nombre;
+    }
+  }
+}
+
+class ResumenAlertas {
+  final int total;
+  final int criticas;
+  final int altas;
+
+  const ResumenAlertas({
+    this.total = 0,
+    this.criticas = 0,
+    this.altas = 0,
+  });
+
+  factory ResumenAlertas.fromJson(Map<String, dynamic> json) => ResumenAlertas(
+        total: (json['total'] as num?)?.toInt() ?? 0,
+        criticas: (json['criticas'] as num?)?.toInt() ?? 0,
+        altas: (json['altas'] as num?)?.toInt() ?? 0,
+      );
+
+  bool get hayAlertas => total > 0;
+  bool get hayCriticas => criticas > 0;
+}
+
+// ============================================================
+// MOVIMIENTO DE STOCK
+// ============================================================
+enum TipoMovimiento {
+  entrada,
+  salida,
+  merma,
+  ajuste,
+  albaran,
+  produccion,
+  desconocido,
+}
+
+extension TipoMovimientoX on TipoMovimiento {
+  static TipoMovimiento fromString(String? raw) {
+    switch (raw) {
+      case 'entrada':
+        return TipoMovimiento.entrada;
+      case 'salida':
+        return TipoMovimiento.salida;
+      case 'merma':
+        return TipoMovimiento.merma;
+      case 'ajuste':
+        return TipoMovimiento.ajuste;
+      case 'albaran':
+        return TipoMovimiento.albaran;
+      case 'produccion':
+        return TipoMovimiento.produccion;
+      default:
+        return TipoMovimiento.desconocido;
+    }
+  }
+
+  String get raw {
+    switch (this) {
+      case TipoMovimiento.entrada:
+        return 'entrada';
+      case TipoMovimiento.salida:
+        return 'salida';
+      case TipoMovimiento.merma:
+        return 'merma';
+      case TipoMovimiento.ajuste:
+        return 'ajuste';
+      case TipoMovimiento.albaran:
+        return 'albaran';
+      case TipoMovimiento.produccion:
+        return 'produccion';
+      case TipoMovimiento.desconocido:
+        return 'ajuste';
+    }
+  }
+
+  String get label {
+    switch (this) {
+      case TipoMovimiento.entrada:
+        return 'Entrada';
+      case TipoMovimiento.salida:
+        return 'Salida';
+      case TipoMovimiento.merma:
+        return 'Merma';
+      case TipoMovimiento.ajuste:
+        return 'Ajuste';
+      case TipoMovimiento.albaran:
+        return 'Albarán';
+      case TipoMovimiento.produccion:
+        return 'Producción';
+      case TipoMovimiento.desconocido:
+        return 'Otro';
+    }
+  }
+
+  /// true si el movimiento añade stock, false si lo resta.
+  /// Para 'ajuste' depende del signo, así que devolvemos null y se
+  /// resuelve con stock_antes/stock_despues.
+  bool? get esEntrada {
+    switch (this) {
+      case TipoMovimiento.entrada:
+      case TipoMovimiento.albaran:
+        return true;
+      case TipoMovimiento.salida:
+      case TipoMovimiento.merma:
+      case TipoMovimiento.produccion:
+        return false;
+      case TipoMovimiento.ajuste:
+      case TipoMovimiento.desconocido:
+        return null;
+    }
+  }
+}
+
+class MovimientoStock {
+  final String? id;
+  final String? restauranteId;
+  final String ingredienteId;
+  final TipoMovimiento tipo;
+  final double cantidad;
+  final String? unidad;
+  final double? stockAntes;
+  final double? stockDespues;
+  final double? costeUnitario;
+  final String? usuarioId;
+  final String? notas;
+  final String? referencia;
+  final DateTime createdAt;
+
+  MovimientoStock({
+    this.id,
+    this.restauranteId,
+    required this.ingredienteId,
+    required this.tipo,
+    required this.cantidad,
+    this.unidad,
+    this.stockAntes,
+    this.stockDespues,
+    this.costeUnitario,
+    this.usuarioId,
+    this.notas,
+    this.referencia,
+    DateTime? createdAt,
+  }) : createdAt = createdAt ?? DateTime.now();
+
+  factory MovimientoStock.fromJson(Map<String, dynamic> json) =>
+      MovimientoStock(
+        id: json['id'] as String?,
+        restauranteId: json['restaurante_id'] as String?,
+        ingredienteId: json['ingrediente_id'] as String,
+        tipo: TipoMovimientoX.fromString(json['tipo'] as String?),
+        cantidad: (json['cantidad'] as num).toDouble(),
+        unidad: json['unidad'] as String?,
+        stockAntes: (json['stock_antes'] as num?)?.toDouble(),
+        stockDespues: (json['stock_despues'] as num?)?.toDouble(),
+        costeUnitario: (json['coste_unitario'] as num?)?.toDouble(),
+        usuarioId: json['usuario_id'] as String?,
+        notas: json['notas'] as String?,
+        referencia: json['referencia'] as String?,
+        createdAt: DateTime.parse(json['created_at'] as String),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'ingrediente_id': ingredienteId,
+        'tipo': tipo.raw,
+        'cantidad': cantidad,
+        'unidad': unidad,
+        'stock_antes': stockAntes,
+        'stock_despues': stockDespues,
+        'coste_unitario': costeUnitario,
+        'usuario_id': usuarioId,
+        'notas': notas,
+        'referencia': referencia,
+      };
+
+  /// Delta firmado: positivo si aumentó stock, negativo si disminuyó.
+  double get delta {
+    if (stockAntes != null && stockDespues != null) {
+      return stockDespues! - stockAntes!;
+    }
+    final esEntrada = tipo.esEntrada;
+    if (esEntrada == null) return 0;
+    return esEntrada ? cantidad : -cantidad;
+  }
+}
+
+/// Punto en la curva de evolución del stock (vista v_evolucion_stock_30d)
+class PuntoEvolucionStock {
+  final DateTime fecha;
+  final double stock;
+
+  PuntoEvolucionStock({required this.fecha, required this.stock});
+
+  factory PuntoEvolucionStock.fromJson(Map<String, dynamic> json) =>
+      PuntoEvolucionStock(
+        fecha: DateTime.parse(json['fecha'] as String),
+        stock: (json['stock_estimado'] as num).toDouble(),
+      );
+}

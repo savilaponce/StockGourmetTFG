@@ -26,6 +26,21 @@ class ProveedorService {
         .toList();
   }
 
+  /// Buscar proveedores por nombre (case-insensitive).
+  Future<List<Proveedor>> search(String query) async {
+    if (query.trim().isEmpty) return [];
+    final data = await _supabase
+        .from('proveedores')
+        .select()
+        .eq('activo', true)
+        .ilike('nombre', '%${query.trim()}%')
+        .order('nombre')
+        .limit(20);
+    return (data as List)
+        .map((json) => Proveedor.fromJson(json as Map<String, dynamic>))
+        .toList();
+  }
+
   /// Crear nuevo proveedor
   Future<Proveedor> create(Proveedor proveedor) async {
     final profile = await _ref.read(currentProfileProvider.future);

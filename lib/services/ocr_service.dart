@@ -1,24 +1,21 @@
 import 'dart:convert';
-import 'dart:io';
+import 'dart:developer' as developer;
+import 'package:image_picker/image_picker.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:http/http.dart' as http;
 
-// ============================================================
-// MODELO — Línea detectada en el albarán
-// ============================================================
 class LineaAlbaran {
   final String nombreProducto;
   final double cantidad;
   final String unidad;
   final double precioUnitario;
-  final bool confirmada;
 
   LineaAlbaran({
     required this.nombreProducto,
     required this.cantidad,
     this.unidad = 'kg',
     this.precioUnitario = 0,
-    this.confirmada = false,
   });
 
   LineaAlbaran copyWith({
@@ -26,249 +23,269 @@ class LineaAlbaran {
     double? cantidad,
     String? unidad,
     double? precioUnitario,
-    bool? confirmada,
   }) {
     return LineaAlbaran(
       nombreProducto: nombreProducto ?? this.nombreProducto,
       cantidad: cantidad ?? this.cantidad,
       unidad: unidad ?? this.unidad,
       precioUnitario: precioUnitario ?? this.precioUnitario,
-      confirmada: confirmada ?? this.confirmada,
     );
   }
-
-  Map<String, dynamic> toJson() => {
-        'nombre_producto': nombreProducto,
-        'cantidad': cantidad,
-        'unidad': unidad,
-        'precio_unitario': precioUnitario,
-      };
 }
 
-// ============================================================
-// RESULTADO DEL ESCANEO
-// ============================================================
 class ResultadoOCR {
-  final String textoRaw;
   final List<LineaAlbaran> lineas;
-  final String? proveedor;
-  final DateTime? fechaAlbaran;
-  final String? numeroAlbaran;
   final String error;
+  final String textoRaw;
 
-  ResultadoOCR({
-    this.textoRaw = '',
-    this.lineas = const [],
-    this.proveedor,
-    this.fechaAlbaran,
-    this.numeroAlbaran,
-    this.error = '',
-  });
-
+  ResultadoOCR({this.lineas = const [], this.error = '', this.textoRaw = ''});
   bool get tieneError => error.isNotEmpty;
-  bool get tieneLineas => lineas.isNotEmpty;
 }
 
-// ============================================================
-// OCR SERVICE — Llama a Google Cloud Vision y parsea el texto
-// ============================================================
 class OcrService {
-  static const _visionEndpoint =
-      'https://vision.googleapis.com/v1/images:annotate';
+  static const _endpoint = 'https://vision.googleapis.com/v1/images:annotate';
 
-  /// Envía la imagen a Cloud Vision y devuelve el resultado parseado
-  Future<ResultadoOCR> escanearAlbaran(File imagen) async {
+  Future<ResultadoOCR> escanearAlbaran(XFile imagen) async {
     final apiKey = dotenv.env['GOOGLE_CLOUD_VISION_KEY'] ?? '';
     if (apiKey.isEmpty) {
-      return ResultadoOCR(
-          error: 'GOOGLE_CLOUD_VISION_KEY no configurada en .env');
+      return ResultadoOCR(error: 'Falta GOOGLE_CLOUD_VISION_KEY en .env');
     }
 
     try {
-      // 1. Codificar imagen en base64
       final bytes = await imagen.readAsBytes();
+      developer.log('OCR: ${bytes.lengthInBytes} bytes', name: 'OCR');
+
       final base64Image = base64Encode(bytes);
 
-      // 2. Llamada a la API de Cloud Vision
-      final client = HttpClient();
-      final request = await client
-          .postUrl(Uri.parse('$_visionEndpoint?key=$apiKey'));
-      request.headers.contentType = ContentType.json;
-
-      final body = jsonEncode({
-        'requests': [
-          {
-            'image': {'content': base64Image},
-            'features': [
-              {'type': 'DOCUMENT_TEXT_DETECTION', 'maxResults': 1}
-            ],
-            'imageContext': {
-              'languageHints': ['es', 'en']
+      final response = await http.post(
+        Uri.parse('$_endpoint?key=$apiKey'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'requests': [
+            {
+              'image': {'content': base64Image},
+              'features': [
+                {'type': 'DOCUMENT_TEXT_DETECTION'}
+              ],
+              'imageContext': {
+                'languageHints': ['es']
+              }
             }
-          }
-        ]
-      });
-
-      request.write(body);
-      final response = await request.close();
-      final responseBody = await response.transform(utf8.decoder).join();
-      client.close();
+          ]
+        }),
+      );
 
       if (response.statusCode != 200) {
+        developer.log('OCR HTTP ${response.statusCode}: ${response.body}',
+            name: 'OCR');
         return ResultadoOCR(
-            error: 'Error Cloud Vision (${response.statusCode})');
+          error: 'Error API ${response.statusCode}: ${response.body}',
+        );
       }
 
-      // 3. Extraer texto completo
-      final json = jsonDecode(responseBody) as Map<String, dynamic>;
+      final json = jsonDecode(response.body) as Map<String, dynamic>;
       final responses = json['responses'] as List?;
       if (responses == null || responses.isEmpty) {
-        return ResultadoOCR(error: 'Respuesta vacía de Cloud Vision');
+        return ResultadoOCR(error: 'Respuesta sin "responses"');
       }
 
-      final fullText =
-          responses[0]['fullTextAnnotation']?['text'] as String? ?? '';
+      final primera = responses[0] as Map<String, dynamic>;
+      if (primera.containsKey('error')) {
+        return ResultadoOCR(error: 'Vision error: ${primera['error']}');
+      }
+
+      final annotation = primera['fullTextAnnotation'];
+      if (annotation == null) {
+        return ResultadoOCR(error: 'Sin texto detectado en la imagen');
+      }
+
+      final fullText = (annotation['text'] ?? '').toString();
+      developer.log('OCR raw text:\n$fullText', name: 'OCR');
+
       if (fullText.isEmpty) {
-        return ResultadoOCR(
-            error:
-                'No se detectó texto en la imagen. Asegúrate de que la imagen sea nítida y bien iluminada.');
+        return ResultadoOCR(error: 'Texto vacío');
       }
 
-      // 4. Parsear el texto extraído
-      return _parsearTextoAlbaran(fullText);
-    } catch (e) {
-      return ResultadoOCR(error: 'Error al procesar la imagen: $e');
+      // Intentar primero el parser de Banco de Alimentos (formato conocido)
+      var lineas = _parserBancoAlimentos(fullText);
+
+      // Si no encuentra nada, fallback al parser genérico
+      if (lineas.isEmpty) {
+        developer.log('OCR: parser BdA no encontró líneas, probando genérico',
+            name: 'OCR');
+        lineas = _parserGenerico(fullText);
+      }
+
+      developer.log('OCR: ${lineas.length} líneas extraídas', name: 'OCR');
+
+      return ResultadoOCR(
+        lineas: lineas,
+        textoRaw: fullText,
+        error: lineas.isEmpty
+            ? 'OCR funcionó pero no se reconoció ninguna línea de producto. Revisa el formato.'
+            : '',
+      );
+    } catch (e, st) {
+      developer.log('OCR excepción: $e\n$st', name: 'OCR');
+      return ResultadoOCR(error: 'Excepción: $e');
     }
   }
 
-  // ----------------------------------------------------------
-  // PARSER — extrae líneas de producto del texto OCR
-  // ----------------------------------------------------------
-  ResultadoOCR _parsearTextoAlbaran(String texto) {
-    final lineas = <LineaAlbaran>[];
-    final lineasTexto = texto.split('\n');
+  // ==========================================================================
+  // PARSER POR BLOQUES (Banco de Alimentos)
+  //
+  // Vision devuelve cada celda de la tabla en su propia línea. Cada fila de
+  // producto tiene este patrón:
+  //
+  //   [CÓDIGO 4 dígitos]      <- 1101, 0201, 1102, ...
+  //   [NOMBRE PRODUCTO]       <- una o varias líneas (puede haber comas, ...)
+  //   [UDS]                   <- entero
+  //   [KG/L]                  <- decimal con coma (puede ser 0)
+  //   [TOTAL]                 <- decimal con coma
+  //
+  // Estrategia: detectar códigos de 4 dígitos como "anclas" de fila, y
+  // recoger las siguientes líneas hasta encontrar la siguiente ancla.
+  // ==========================================================================
+  List<LineaAlbaran> _parserBancoAlimentos(String texto) {
+    final List<LineaAlbaran> resultado = [];
+    final lineas = texto
+        .split('\n')
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
 
-    String? proveedor;
-    DateTime? fechaAlbaran;
-    String? numeroAlbaran;
+    // Un código de fila es exactamente 4 dígitos (1101, 0201, etc.)
+    final regexCodigo = RegExp(r'^\d{4}$');
+    // Un decimal con coma típico del albarán (18,000 / 0,800 / 10,500)
+    final regexDecimal = RegExp(r'^\d{1,4},\d{1,3}$');
+    // Un entero corto típico de "Uds" (1, 2, 14, 100)
+    final regexEntero = RegExp(r'^\d{1,4}$');
 
-    // Patrones de extracción
-    final regexFecha = RegExp(
-        r'(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{2,4})');
-    final regexNumAlbaran = RegExp(
-        r'(?:albar[aá]n|albaran|n[uú]m\.?|ref\.?)[:\s#]*([A-Z0-9\-\/]+)',
-        caseSensitive: false);
-    // Patrón para líneas de producto:
-    // Nombre (texto), cantidad (número), unidad (kg/L/ud...), precio (número con €/,/.)
-    final regexLinea = RegExp(
-        r'^(.{3,40}?)\s+([\d]+[,\.]?[\d]*)\s*(kg|g|l|lt|litro|litros|ud|uds|und|unid|caja|cajas|bote|botes|bolsa|bolsas|saco|sacos)?\s*([\d]+[,\.]?[\d]*)?',
-        caseSensitive: false,
-        multiLine: true);
+    // Encontrar índices de todos los códigos de fila
+    final indicesCodigos = <int>[];
+    for (var i = 0; i < lineas.length; i++) {
+      if (regexCodigo.hasMatch(lineas[i])) {
+        indicesCodigos.add(i);
+      }
+    }
 
-    for (int i = 0; i < lineasTexto.length; i++) {
-      final linea = lineasTexto[i].trim();
-      if (linea.isEmpty) continue;
+    if (indicesCodigos.isEmpty) return [];
 
-      // Detectar número de albarán
-      if (numeroAlbaran == null) {
-        final matchNum = regexNumAlbaran.firstMatch(linea);
-        if (matchNum != null) {
-          numeroAlbaran = matchNum.group(1)?.trim();
-          continue;
+    // Localizar el final de la tabla: la línea "Total:" o "Total" suelta
+    int finTabla = lineas.length;
+    for (var i = indicesCodigos.last; i < lineas.length; i++) {
+      if (RegExp(r'^total\s*:?$', caseSensitive: false)
+          .hasMatch(lineas[i])) {
+        finTabla = i;
+        break;
+      }
+    }
+
+    // Para cada código, el bloque va desde su índice hasta el siguiente código
+    // (o hasta el final de la tabla si es la última fila)
+    for (var i = 0; i < indicesCodigos.length; i++) {
+      final inicio = indicesCodigos[i];
+      final fin = (i + 1 < indicesCodigos.length)
+          ? indicesCodigos[i + 1]
+          : finTabla;
+
+      final bloque = lineas.sublist(inicio, fin);
+      if (bloque.length < 4) continue; // no hay datos suficientes
+
+      // Localizar líneas del bloque que son números
+      final numeros = <int>[];
+      for (var j = 1; j < bloque.length; j++) {
+        if (regexDecimal.hasMatch(bloque[j]) ||
+            regexEntero.hasMatch(bloque[j])) {
+          numeros.add(j);
         }
       }
 
-      // Detectar fecha
-      if (fechaAlbaran == null) {
-        final matchFecha = regexFecha.firstMatch(linea);
-        if (matchFecha != null) {
-          try {
-            int anyo = int.parse(matchFecha.group(3)!);
-            if (anyo < 100) anyo += 2000;
-            fechaAlbaran = DateTime(
-              anyo,
-              int.parse(matchFecha.group(2)!),
-              int.parse(matchFecha.group(1)!),
-            );
-          } catch (_) {}
-          continue;
-        }
-      }
+      if (numeros.length < 3) continue; // formato inesperado, saltar
 
-      // Detectar proveedor (típicamente las primeras líneas de texto libre)
-      if (proveedor == null && i < 5 && linea.length > 3) {
-        final esNumero = RegExp(r'^[\d\s€.,]+$').hasMatch(linea);
-        if (!esNumero) {
-          proveedor = linea;
-          continue;
-        }
-      }
+      // Los 3 últimos números del bloque son: uds, kgs, total (en ese orden)
+      final idxUds = numeros[numeros.length - 3];
+      final idxKgs = numeros[numeros.length - 2];
 
-      // Detectar líneas de producto
-      final matchLinea = regexLinea.firstMatch(linea);
-      if (matchLinea != null) {
-        final nombreRaw = matchLinea.group(1)?.trim() ?? '';
-        final cantidadStr =
-            (matchLinea.group(2) ?? '0').replaceAll(',', '.');
-        final unidadRaw = matchLinea.group(3)?.toLowerCase() ?? 'ud';
-        final precioStr =
-            (matchLinea.group(4) ?? '0').replaceAll(',', '.');
+      // El nombre es todas las líneas entre el código y idxUds
+      final nombrePartes = bloque.sublist(1, idxUds);
+      final nombre = _limpiarNombre(nombrePartes.join(' '));
 
-        // Filtrar líneas que claramente no son productos
-        if (_esLineaDescartable(nombreRaw)) continue;
+      final uds = _aDouble(bloque[idxUds]);
+      final kgs = _aDouble(bloque[idxKgs]);
 
-        final cantidad = double.tryParse(cantidadStr) ?? 0;
-        if (cantidad <= 0) continue;
+      if (nombre.length < 2) continue;
 
-        lineas.add(LineaAlbaran(
-          nombreProducto: _normalizarNombre(nombreRaw),
-          cantidad: cantidad,
-          unidad: _normalizarUnidad(unidadRaw),
-          precioUnitario: double.tryParse(precioStr) ?? 0,
+      resultado.add(LineaAlbaran(
+        nombreProducto: nombre,
+        // Si hay kgs > 0 lo usamos, si no, la cantidad son unidades
+        cantidad: kgs > 0 ? kgs : uds,
+        unidad: kgs > 0 ? 'kg' : 'ud',
+      ));
+    }
+
+    return resultado;
+  }
+
+  // ==========================================================================
+  // PARSER GENÉRICO (fallback para otros formatos)
+  // ==========================================================================
+  List<LineaAlbaran> _parserGenerico(String texto) {
+    final List<LineaAlbaran> resultado = [];
+    final regexFila = RegExp(
+      r'^(.+?)\s+(\d{1,4}(?:[.,]\d{1,3})?)\s*(kg|l|ud|uds)?$',
+      caseSensitive: false,
+    );
+
+    for (var raw in texto.split('\n')) {
+      final l = raw.trim();
+      if (l.isEmpty || _esBasura(l)) continue;
+
+      final m = regexFila.firstMatch(l);
+      if (m == null) continue;
+
+      final nombre = _limpiarNombre(m.group(1)!);
+      final cant = _aDouble(m.group(2)!);
+      final unidad = (m.group(3) ?? 'ud').toLowerCase();
+
+      if (nombre.length > 2 && cant > 0 && cant < 100000) {
+        resultado.add(LineaAlbaran(
+          nombreProducto: nombre,
+          cantidad: cant,
+          unidad: unidad.startsWith('u') ? 'ud' : unidad,
         ));
       }
     }
-
-    return ResultadoOCR(
-      textoRaw: texto,
-      lineas: lineas,
-      proveedor: proveedor,
-      fechaAlbaran: fechaAlbaran,
-      numeroAlbaran: numeroAlbaran,
-    );
+    return resultado;
   }
 
-  bool _esLineaDescartable(String texto) {
-    final palabrasDescartables = [
-      'total', 'subtotal', 'iva', 'base imponible', 'importe',
-      'fecha', 'albarán', 'albaran', 'dirección', 'cif', 'nif',
-      'página', 'pagina', 'teléfono', 'fax', 'email',
+  bool _esBasura(String t) {
+    final low = t.toLowerCase();
+    if (low.length < 4) return true;
+    const palabrasBasura = [
+      'total', 'fecha', 'almacén', 'almacen', 'origen', 'proyecto',
+      'código', 'codigo', 'alimento', 'banco de alimentos', 'cif',
+      'tlf', 'tel:', 'albarán', 'albaran', 'entrada', 'polígono',
+      'poligono', 'industrial',
     ];
-    final textoLower = texto.toLowerCase();
-    return palabrasDescartables.any((p) => textoLower.contains(p));
+    for (final p in palabrasBasura) {
+      if (low.contains(p)) return true;
+    }
+    return false;
   }
 
-  String _normalizarNombre(String nombre) {
-    // Capitaliza primera letra, elimina caracteres extraños
-    if (nombre.isEmpty) return nombre;
-    return nombre[0].toUpperCase() + nombre.substring(1).toLowerCase();
+  String _limpiarNombre(String n) {
+    return n
+        .replaceFirst(RegExp(r'^\d{2,}\s+'), '')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .replaceAll(RegExp(r'[.…]+$'), '')
+        .trim()
+        .toUpperCase();
   }
 
-  String _normalizarUnidad(String unidad) {
-    return switch (unidad.toLowerCase()) {
-      'kg' || 'kilo' || 'kilos' => 'kg',
-      'g' || 'gr' || 'gramo' || 'gramos' => 'g',
-      'l' || 'lt' || 'litro' || 'litros' => 'L',
-      'caja' || 'cajas' => 'caja',
-      'bote' || 'botes' => 'bote',
-      'bolsa' || 'bolsas' => 'bolsa',
-      'saco' || 'sacos' => 'saco',
-      _ => 'ud',
-    };
+  double _aDouble(String s) {
+    return double.tryParse(s.replaceAll('.', '').replaceAll(',', '.')) ?? 0;
   }
 }
 
-// ============================================================
-// PROVIDER
-// ============================================================
 final ocrServiceProvider = Provider<OcrService>((ref) => OcrService());

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
@@ -7,38 +8,58 @@ import 'package:go_router/go_router.dart';
 import '../../app.dart';
 import '../../models/models.dart';
 import '../../services/ocr_service.dart';
-import '../../services/pedido_service.dart';
 import '../../services/ingrediente_service.dart';
 
 // ============================================================
 // ESTADO DEL ESCÁNER
 // ============================================================
-enum EstadoEscaner { inicial, procesando, resultado, error }
+enum EstadoEscaner {
+  inicial,
+  procesando,    // OCR en curso
+  resultado,     // OCR listo, usuario revisa/edita las líneas extraídas
+  analizando,    // Cruzando con el inventario
+  decidiendo,    // Usuario revisa qué hacer con cada línea (fusionar/crear/descartar)
+  guardando,     // Aplicando cambios en Supabase
+  completado,    // Guardado OK, listos para navegar fuera
+  error,
+}
 
 class EscanerState {
   final EstadoEscaner estado;
-  final File? imagen;
+  final XFile? imagen;
   final ResultadoOCR? resultado;
   final List<LineaAlbaran> lineasEditadas;
+  final List<LineaAlbaranAnalizada> lineasAnalizadas;
+  final ResumenAlbaran? resumen;
+  final String? mensajeError;
 
   const EscanerState({
     this.estado = EstadoEscaner.inicial,
     this.imagen,
     this.resultado,
     this.lineasEditadas = const [],
+    this.lineasAnalizadas = const [],
+    this.resumen,
+    this.mensajeError,
   });
 
   EscanerState copyWith({
     EstadoEscaner? estado,
-    File? imagen,
+    XFile? imagen,
     ResultadoOCR? resultado,
     List<LineaAlbaran>? lineasEditadas,
+    List<LineaAlbaranAnalizada>? lineasAnalizadas,
+    ResumenAlbaran? resumen,
+    String? mensajeError,
   }) =>
       EscanerState(
         estado: estado ?? this.estado,
         imagen: imagen ?? this.imagen,
         resultado: resultado ?? this.resultado,
         lineasEditadas: lineasEditadas ?? this.lineasEditadas,
+        lineasAnalizadas: lineasAnalizadas ?? this.lineasAnalizadas,
+        resumen: resumen ?? this.resumen,
+        mensajeError: mensajeError ?? this.mensajeError,
       );
 }
 
@@ -47,15 +68,17 @@ class EscanerState {
 // ============================================================
 class EscanerNotifier extends StateNotifier<EscanerState> {
   final OcrService _ocrService;
+  final IngredienteService _ingredienteService;
 
-  EscanerNotifier(this._ocrService) : super(const EscanerState());
+  EscanerNotifier(this._ocrService, this._ingredienteService)
+      : super(const EscanerState());
 
   Future<void> tomarFoto() async {
     final picker = ImagePicker();
     final picked =
         await picker.pickImage(source: ImageSource.camera, imageQuality: 90);
     if (picked == null) return;
-    await _procesarImagen(File(picked.path));
+    await _procesarImagen(picked);
   }
 
   Future<void> seleccionarGaleria() async {
@@ -63,12 +86,14 @@ class EscanerNotifier extends StateNotifier<EscanerState> {
     final picked =
         await picker.pickImage(source: ImageSource.gallery, imageQuality: 90);
     if (picked == null) return;
-    await _procesarImagen(File(picked.path));
+    await _procesarImagen(picked);
   }
 
-  Future<void> _procesarImagen(File imagen) async {
+  Future<void> _procesarImagen(XFile imagen) async {
     state = state.copyWith(estado: EstadoEscaner.procesando, imagen: imagen);
+
     final resultado = await _ocrService.escanearAlbaran(imagen);
+
     if (resultado.tieneError) {
       state = state.copyWith(
           estado: EstadoEscaner.error, resultado: resultado);
@@ -81,6 +106,7 @@ class EscanerNotifier extends StateNotifier<EscanerState> {
     }
   }
 
+  // -- edición de líneas durante el estado "resultado" -----------------------
   void actualizarLinea(int index, LineaAlbaran linea) {
     final nuevas = List<LineaAlbaran>.from(state.lineasEditadas);
     nuevas[index] = linea;
@@ -99,6 +125,96 @@ class EscanerNotifier extends StateNotifier<EscanerState> {
     state = state.copyWith(lineasEditadas: nuevas);
   }
 
+  // -- paso 2: analizar contra inventario -----------------------------------
+  Future<void> analizarContraInventario() async {
+    if (state.lineasEditadas.isEmpty) return;
+    state = state.copyWith(estado: EstadoEscaner.analizando);
+    try {
+      final analizadas =
+          await _ingredienteService.analizarLineas(state.lineasEditadas);
+      state = state.copyWith(
+        estado: EstadoEscaner.decidiendo,
+        lineasAnalizadas: analizadas,
+      );
+    } catch (e) {
+      state = state.copyWith(
+        estado: EstadoEscaner.error,
+        mensajeError: 'Error analizando: $e',
+      );
+    }
+  }
+
+  // -- edición de decisiones durante el estado "decidiendo" ------------------
+  void cambiarAccion(int index, AccionLinea accion) {
+    final nuevas =
+        List<LineaAlbaranAnalizada>.from(state.lineasAnalizadas);
+    nuevas[index] = nuevas[index].copyWith(accion: accion);
+    state = state.copyWith(lineasAnalizadas: nuevas);
+  }
+
+  /// El usuario eligió manualmente fusionar con un ingrediente concreto
+  void asignarFusionManual(int index, Ingrediente destino) {
+    final nuevas =
+        List<LineaAlbaranAnalizada>.from(state.lineasAnalizadas);
+    nuevas[index] = nuevas[index].copyWith(
+      ingredienteExistente: destino,
+      accion: AccionLinea.fusionar,
+    );
+    state = state.copyWith(lineasAnalizadas: nuevas);
+  }
+
+  /// Actualiza el precio unitario de una línea (solo aplica al crear nuevo)
+  void cambiarPrecio(int index, double precio) {
+    final nuevas =
+        List<LineaAlbaranAnalizada>.from(state.lineasAnalizadas);
+    final actual = nuevas[index];
+    nuevas[index] = actual.copyWith(
+      linea: actual.linea.copyWith(precioUnitario: precio),
+    );
+    state = state.copyWith(lineasAnalizadas: nuevas);
+  }
+
+  void volverARevisarLineas() {
+    state = state.copyWith(estado: EstadoEscaner.resultado);
+  }
+
+  // -- paso 3: aplicar ------------------------------------------------------
+  /// Aplica los cambios. Al terminar, deja el estado en `completado` (con
+  /// el resumen) o en `error`. La UI debe escuchar estas transiciones para
+  /// navegar / mostrar mensajes.
+  Future<void> confirmar() async {
+    // Re-entry guard: si ya estamos guardando, ignorar pulsaciones extra
+    if (state.estado == EstadoEscaner.guardando) return;
+    if (state.lineasAnalizadas.isEmpty) return;
+
+    state = state.copyWith(estado: EstadoEscaner.guardando);
+    try {
+      final resumen = await _ingredienteService
+          .aplicarDecisiones(state.lineasAnalizadas);
+
+      if (resumen.tieneErrores && resumen.totalAplicados == 0) {
+        // Todo falló: vamos al estado de error con el detalle
+        state = state.copyWith(
+          estado: EstadoEscaner.error,
+          mensajeError:
+              'No se pudo guardar ninguna línea:\n\n${resumen.errores.join('\n\n')}',
+          resumen: resumen,
+        );
+      } else {
+        // OK total o parcial: marcamos completado, la UI navegará
+        state = state.copyWith(
+          estado: EstadoEscaner.completado,
+          resumen: resumen,
+        );
+      }
+    } catch (e) {
+      state = state.copyWith(
+        estado: EstadoEscaner.error,
+        mensajeError: 'Error al guardar: $e',
+      );
+    }
+  }
+
   void reiniciar() {
     state = const EscanerState();
   }
@@ -106,11 +222,14 @@ class EscanerNotifier extends StateNotifier<EscanerState> {
 
 final escanerProvider =
     StateNotifierProvider.autoDispose<EscanerNotifier, EscanerState>((ref) {
-  return EscanerNotifier(ref.read(ocrServiceProvider));
+  return EscanerNotifier(
+    ref.read(ocrServiceProvider),
+    ref.read(ingredienteServiceProvider),
+  );
 });
 
 // ============================================================
-// PANTALLA PRINCIPAL DEL ESCÁNER
+// PANTALLA PRINCIPAL
 // ============================================================
 class AlbaranScannerScreen extends ConsumerWidget {
   const AlbaranScannerScreen({super.key});
@@ -119,16 +238,65 @@ class AlbaranScannerScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(escanerProvider);
 
+    // Reaccionar a la transición a "completado": refrescar inventario,
+    // mostrar SnackBar y navegar al home.
+    ref.listen<EscanerState>(escanerProvider, (prev, next) {
+      if (prev?.estado != EstadoEscaner.completado &&
+          next.estado == EstadoEscaner.completado) {
+        final resumen = next.resumen;
+        if (resumen == null) return;
+
+        // Refrescar providers de inventario
+        ref.invalidate(ingredientesProvider);
+        ref.invalidate(ingredientesPorCaducarProvider);
+
+        // Construir mensaje
+        final partes = <String>[];
+        if (resumen.actualizados > 0) {
+          partes.add('${resumen.actualizados} actualizados');
+        }
+        if (resumen.creados > 0) partes.add('${resumen.creados} creados');
+        if (resumen.descartados > 0) {
+          partes.add('${resumen.descartados} descartados');
+        }
+        if (resumen.tieneErrores) {
+          partes.add('${resumen.errores.length} con error');
+        }
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Inventario actualizado: ${partes.join(', ')}'),
+            backgroundColor:
+                resumen.tieneErrores ? Colors.orange : Colors.green,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+
+        // Navegar al home (no solo pop, para no volver al scanner)
+        if (context.mounted) context.go('/');
+      }
+    });
+
     return Scaffold(
       backgroundColor: SGColors.background,
       appBar: AppBar(
-        title: const Text('Escanear Albarán'),
+        title: Text(_titulo(state.estado)),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
-          onPressed: () => context.pop(),
+          onPressed: () {
+            // Si estamos guardando, no permitir salir
+            if (state.estado == EstadoEscaner.guardando) return;
+            // Si estamos decidiendo, volver al paso anterior; si no, salir
+            if (state.estado == EstadoEscaner.decidiendo) {
+              ref.read(escanerProvider.notifier).volverARevisarLineas();
+            } else {
+              context.pop();
+            }
+          },
         ),
         actions: [
-          if (state.estado == EstadoEscaner.resultado)
+          if (state.estado == EstadoEscaner.resultado ||
+              state.estado == EstadoEscaner.decidiendo)
             TextButton(
               onPressed: () => ref.read(escanerProvider.notifier).reiniciar(),
               child: const Text('Nuevo'),
@@ -137,25 +305,39 @@ class AlbaranScannerScreen extends ConsumerWidget {
       ),
       body: switch (state.estado) {
         EstadoEscaner.inicial => _VistaInicial(
-            onCamara: () =>
-                ref.read(escanerProvider.notifier).tomarFoto(),
+            onCamara: () => ref.read(escanerProvider.notifier).tomarFoto(),
             onGaleria: () =>
                 ref.read(escanerProvider.notifier).seleccionarGaleria(),
           ),
-        EstadoEscaner.procesando => _VistaProcesando(imagen: state.imagen),
+        EstadoEscaner.procesando =>
+          _VistaCargando(imagen: state.imagen, mensaje: 'Leyendo albarán...'),
+        EstadoEscaner.analizando =>
+          const _VistaCargando(mensaje: 'Comprobando inventario...'),
+        EstadoEscaner.guardando =>
+          const _VistaCargando(mensaje: 'Actualizando inventario...'),
+        EstadoEscaner.completado =>
+          const _VistaCargando(mensaje: 'Listo, redirigiendo...'),
         EstadoEscaner.resultado => _VistaResultado(state: state),
+        EstadoEscaner.decidiendo => _VistaDecidiendo(state: state),
         EstadoEscaner.error => _VistaError(
-            mensaje: state.resultado?.error ?? 'Error desconocido',
-            onReintentar: () =>
-                ref.read(escanerProvider.notifier).reiniciar(),
+            mensaje: state.mensajeError ??
+                state.resultado?.error ??
+                'Error desconocido',
+            onReintentar: () => ref.read(escanerProvider.notifier).reiniciar(),
           ),
       },
     );
   }
+
+  String _titulo(EstadoEscaner e) => switch (e) {
+        EstadoEscaner.decidiendo => 'Revisar y confirmar',
+        EstadoEscaner.resultado => 'Productos detectados',
+        _ => 'Escanear Albarán',
+      };
 }
 
 // ============================================================
-// VISTA INICIAL — Elegir fuente de imagen
+// VISTA INICIAL
 // ============================================================
 class _VistaInicial extends StatelessWidget {
   final VoidCallback onCamara;
@@ -188,17 +370,7 @@ class _VistaInicial extends StatelessWidget {
                 .headlineSmall
                 ?.copyWith(fontWeight: FontWeight.w700),
           ),
-          const SizedBox(height: 12),
-          Text(
-            'Fotografía el albarán de tu proveedor y el sistema detectará automáticamente los productos, cantidades y precios.',
-            textAlign: TextAlign.center,
-            style: Theme.of(context)
-                .textTheme
-                .bodyMedium
-                ?.copyWith(color: SGColors.textSecondary),
-          ),
           const SizedBox(height: 48),
-          // Botón cámara
           SizedBox(
             width: double.infinity,
             height: 56,
@@ -209,7 +381,6 @@ class _VistaInicial extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 16),
-          // Botón galería
           SizedBox(
             width: double.infinity,
             height: 56,
@@ -225,30 +396,6 @@ class _VistaInicial extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(height: 24),
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: SGColors.primaryLight,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.tips_and_updates_outlined,
-                    color: SGColors.primary, size: 20),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    'Para mejores resultados: buena iluminación, imagen centrada y enfocada.',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: SGColors.primary,
-                          fontWeight: FontWeight.w500,
-                        ),
-                  ),
-                ),
-              ],
-            ),
-          ),
         ],
       ),
     );
@@ -256,12 +403,13 @@ class _VistaInicial extends StatelessWidget {
 }
 
 // ============================================================
-// VISTA PROCESANDO — Spinner con preview de imagen
+// VISTA CARGANDO (genérica para procesando / analizando / guardando)
 // ============================================================
-class _VistaProcesando extends StatelessWidget {
-  final File? imagen;
+class _VistaCargando extends StatelessWidget {
+  final XFile? imagen;
+  final String mensaje;
 
-  const _VistaProcesando({this.imagen});
+  const _VistaCargando({this.imagen, required this.mensaje});
 
   @override
   Widget build(BuildContext context) {
@@ -271,128 +419,103 @@ class _VistaProcesando extends StatelessWidget {
           Expanded(
             child: Container(
               margin: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
+              child: ClipRRect(
                 borderRadius: BorderRadius.circular(16),
-                image: DecorationImage(
-                  image: FileImage(imagen!),
-                  fit: BoxFit.contain,
-                ),
+                child: kIsWeb
+                    ? Image.network(imagen!.path, fit: BoxFit.contain)
+                    : Image.file(File(imagen!.path), fit: BoxFit.contain),
               ),
             ),
-          ),
+          )
+        else
+          const Spacer(),
         Padding(
           padding: const EdgeInsets.all(32),
           child: Column(
             children: [
               const CircularProgressIndicator(color: SGColors.primary),
-              const SizedBox(height: 20),
-              Text(
-                'Analizando albarán...',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                      color: SGColors.textPrimary,
-                    ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Google Cloud Vision está extrayendo el texto',
-                style: Theme.of(context)
-                    .textTheme
-                    .bodySmall
-                    ?.copyWith(color: SGColors.textSecondary),
-              ),
+              const SizedBox(height: 12),
+              Text(mensaje),
             ],
           ),
         ),
+        if (imagen == null) const Spacer(),
       ],
     );
   }
 }
 
 // ============================================================
-// VISTA RESULTADO — Lista editable de líneas detectadas
+// VISTA RESULTADO (paso 1 → revisar líneas extraídas del OCR)
 // ============================================================
 class _VistaResultado extends ConsumerWidget {
   final EscanerState state;
-
   const _VistaResultado({required this.state});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final resultado = state.resultado!;
     final lineas = state.lineasEditadas;
 
     return Column(
       children: [
-        // Cabecera resumen
         Container(
-          margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: SGColors.surface,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: SGColors.border),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.check_circle, color: SGColors.green, size: 20),
-                  const SizedBox(width: 8),
-                  Text(
-                    '${lineas.length} productos detectados',
-                    style: const TextStyle(
-                        fontWeight: FontWeight.w600, color: SGColors.green),
-                  ),
-                ],
-              ),
-              if (resultado.proveedor != null) ...[
-                const SizedBox(height: 8),
-                Text('Proveedor: ${resultado.proveedor}',
-                    style: const TextStyle(
-                        fontSize: 13, color: SGColors.textSecondary)),
-              ],
-              if (resultado.numeroAlbaran != null) ...[
-                const SizedBox(height: 4),
-                Text('Albarán nº: ${resultado.numeroAlbaran}',
-                    style: const TextStyle(
-                        fontSize: 13, color: SGColors.textSecondary)),
-              ],
-            ],
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          color: SGColors.primaryLight,
+          child: Text(
+            '${lineas.length} productos detectados. Revisa antes de continuar.',
+            style: const TextStyle(fontSize: 13),
+            textAlign: TextAlign.center,
           ),
         ),
-        // Aviso si hay pocas líneas
-        if (lineas.isEmpty)
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Text(
-              'No se detectaron líneas de producto. Revisa la imagen o añade manualmente.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: SGColors.textSecondary),
-            ),
-          ),
-        // Lista de líneas
         Expanded(
-          child: ListView.builder(
-            padding: const EdgeInsets.all(16),
-            itemCount: lineas.length,
-            itemBuilder: (context, index) => _LineaCard(
-              linea: lineas[index],
-              index: index,
-              onEditar: () => _mostrarEditorLinea(context, ref, index, lineas[index]),
-              onEliminar: () =>
-                  ref.read(escanerProvider.notifier).eliminarLinea(index),
+          child: lineas.isEmpty
+              ? const Center(child: Text('No se reconoció ningún producto'))
+              : ListView.builder(
+                  padding: const EdgeInsets.all(12),
+                  itemCount: lineas.length,
+                  itemBuilder: (context, index) => Card(
+                    child: ListTile(
+                      title: Text(lineas[index].nombreProducto),
+                      subtitle: Text(
+                          '${lineas[index].cantidad} ${lineas[index].unidad}'),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.edit, size: 20),
+                            onPressed: () => _mostrarEditorLinea(
+                                context, ref, index, lineas[index]),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.delete_outline,
+                                size: 20, color: Colors.redAccent),
+                            onPressed: () => ref
+                                .read(escanerProvider.notifier)
+                                .eliminarLinea(index),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+        ),
+        Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: SizedBox(
+            width: double.infinity,
+            height: 56,
+            child: ElevatedButton.icon(
+              icon: const Icon(Icons.arrow_forward),
+              label: const Text('Siguiente: Revisar contra inventario'),
+              onPressed: lineas.isEmpty
+                  ? null
+                  : () => ref
+                      .read(escanerProvider.notifier)
+                      .analizarContraInventario(),
             ),
           ),
-        ),
-        // Botones de acción
-        _BarraAcciones(
-          lineas: lineas,
-          proveedor: resultado.proveedor,
-          onAgregarLinea: () =>
-              ref.read(escanerProvider.notifier).agregarLinea(),
-        ),
+        )
       ],
     );
   }
@@ -402,76 +525,522 @@ class _VistaResultado extends ConsumerWidget {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: SGColors.surface,
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (_) => _EditorLineaSheet(
-        linea: linea,
-        onGuardar: (lineaEditada) {
-          ref.read(escanerProvider.notifier).actualizarLinea(index, lineaEditada);
-          Navigator.pop(context);
-        },
+      builder: (_) => Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom,
+        ),
+        child: _EditorLineaSheet(
+          linea: linea,
+          onGuardar: (nueva) =>
+              ref.read(escanerProvider.notifier).actualizarLinea(index, nueva),
+        ),
       ),
     );
   }
 }
 
 // ============================================================
-// CARD DE CADA LÍNEA DETECTADA
+// VISTA DECIDIENDO (paso 2 → confirmar qué hacer con cada línea)
 // ============================================================
-class _LineaCard extends StatelessWidget {
-  final LineaAlbaran linea;
-  final int index;
-  final VoidCallback onEditar;
-  final VoidCallback onEliminar;
+class _VistaDecidiendo extends ConsumerWidget {
+  final EscanerState state;
+  const _VistaDecidiendo({required this.state});
 
-  const _LineaCard({
-    required this.linea,
-    required this.index,
-    required this.onEditar,
-    required this.onEliminar,
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final analizadas = state.lineasAnalizadas;
+
+    final aFusionar =
+        analizadas.where((a) => a.accion == AccionLinea.fusionar).length;
+    final aCrear =
+        analizadas.where((a) => a.accion == AccionLinea.crearNuevo).length;
+    final aDescartar =
+        analizadas.where((a) => a.accion == AccionLinea.descartar).length;
+
+    return Column(
+      children: [
+        // Cabecera resumen
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          color: SGColors.primaryLight,
+          child: Column(
+            children: [
+              Text(
+                'Resumen',
+                style: Theme.of(context)
+                    .textTheme
+                    .titleSmall
+                    ?.copyWith(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '$aFusionar a sumar  ·  $aCrear nuevos  ·  $aDescartar descartados',
+                style: const TextStyle(fontSize: 13),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.all(12),
+            itemCount: analizadas.length,
+            itemBuilder: (context, index) => _TarjetaDecision(
+              analizada: analizadas[index],
+              onCambiarAccion: (accion) => ref
+                  .read(escanerProvider.notifier)
+                  .cambiarAccion(index, accion),
+              onCambiarPrecio: (precio) => ref
+                  .read(escanerProvider.notifier)
+                  .cambiarPrecio(index, precio),
+              onFusionarManual: () => _mostrarSelectorIngrediente(
+                context,
+                ref,
+                index,
+              ),
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: SizedBox(
+            width: double.infinity,
+            height: 56,
+            child: ElevatedButton(
+              onPressed: ((aFusionar + aCrear) == 0 ||
+                      state.estado == EstadoEscaner.guardando)
+                  ? null
+                  : () => ref.read(escanerProvider.notifier).confirmar(),
+              child: state.estado == EstadoEscaner.guardando
+                  ? const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white),
+                        ),
+                        SizedBox(width: 12),
+                        Text('Guardando...'),
+                      ],
+                    )
+                  : Text('Confirmar Albarán (${aFusionar + aCrear} cambios)'),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _mostrarSelectorIngrediente(
+      BuildContext context, WidgetRef ref, int index) async {
+    final destino = await showModalBottomSheet<Ingrediente>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => const _SelectorIngredienteSheet(),
+    );
+    if (destino != null) {
+      ref
+          .read(escanerProvider.notifier)
+          .asignarFusionManual(index, destino);
+    }
+  }
+}
+
+// ============================================================
+// TARJETA DE DECISIÓN POR LÍNEA
+// ============================================================
+class _TarjetaDecision extends StatefulWidget {
+  final LineaAlbaranAnalizada analizada;
+  final ValueChanged<AccionLinea> onCambiarAccion;
+  final ValueChanged<double> onCambiarPrecio;
+  final VoidCallback onFusionarManual;
+
+  const _TarjetaDecision({
+    required this.analizada,
+    required this.onCambiarAccion,
+    required this.onCambiarPrecio,
+    required this.onFusionarManual,
+  });
+
+  @override
+  State<_TarjetaDecision> createState() => _TarjetaDecisionState();
+}
+
+class _TarjetaDecisionState extends State<_TarjetaDecision> {
+  late final TextEditingController _precioCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    final p = widget.analizada.linea.precioUnitario;
+    _precioCtrl = TextEditingController(text: p > 0 ? p.toString() : '');
+  }
+
+  @override
+  void didUpdateWidget(covariant _TarjetaDecision old) {
+    super.didUpdateWidget(old);
+    // Si cambió el precio "desde fuera" (raro, pero puede pasar) sincronizar
+    final nuevo = widget.analizada.linea.precioUnitario;
+    final actual =
+        double.tryParse(_precioCtrl.text.replaceAll(',', '.')) ?? 0;
+    if (nuevo != actual && !_precioCtrl.value.composing.isValid) {
+      _precioCtrl.text = nuevo > 0 ? nuevo.toString() : '';
+    }
+  }
+
+  @override
+  void dispose() {
+    _precioCtrl.dispose();
+    super.dispose();
+  }
+
+  void _emitirPrecio(String s) {
+    final v = double.tryParse(s.replaceAll(',', '.')) ?? 0;
+    widget.onCambiarPrecio(v);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final analizada = widget.analizada;
+    final linea = analizada.linea;
+    final existente = analizada.ingredienteExistente;
+    final esDescartado = analizada.accion == AccionLinea.descartar;
+    final esCrearNuevo = analizada.accion == AccionLinea.crearNuevo;
+
+    Color colorBanda;
+    IconData icono;
+    String etiqueta;
+
+    switch (analizada.accion) {
+      case AccionLinea.fusionar:
+        colorBanda = Colors.blue;
+        icono = Icons.merge_type;
+        etiqueta = 'Sumar al existente';
+        break;
+      case AccionLinea.crearNuevo:
+        colorBanda = Colors.green;
+        icono = Icons.add_circle_outline;
+        etiqueta = 'Crear nuevo';
+        break;
+      case AccionLinea.descartar:
+        colorBanda = Colors.grey;
+        icono = Icons.block;
+        etiqueta = 'Descartar';
+        break;
+    }
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: Opacity(
+        opacity: esDescartado ? 0.5 : 1.0,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(icono, color: colorBanda, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      linea.nombreProducto,
+                      style: const TextStyle(
+                          fontWeight: FontWeight.w600, fontSize: 15),
+                    ),
+                  ),
+                  Text('${linea.cantidad} ${linea.unidad}',
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 14)),
+                ],
+              ),
+              const SizedBox(height: 6),
+              if (analizada.accion == AccionLinea.fusionar && existente != null)
+                Padding(
+                  padding: const EdgeInsets.only(left: 28),
+                  child: Text(
+                    '→ ${existente.nombre} (stock actual: '
+                    '${existente.stockActual} ${existente.unidad}'
+                    '${existente.costePorUnidad > 0 ? ", "
+                        "${existente.costePorUnidad.toStringAsFixed(2)} €/${existente.unidad}" : ""})',
+                    style: TextStyle(
+                        fontSize: 12, color: Colors.grey.shade700),
+                  ),
+                ),
+              if (esCrearNuevo)
+                Padding(
+                  padding: const EdgeInsets.only(left: 28),
+                  child: Text(
+                    'No existe en el inventario',
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade700,
+                        fontStyle: FontStyle.italic),
+                  ),
+                ),
+              const SizedBox(height: 8),
+              // Botones de acción
+              Wrap(
+                spacing: 6,
+                children: [
+                  _ChipAccion(
+                    label: 'Sumar',
+                    icon: Icons.merge_type,
+                    selected: analizada.accion == AccionLinea.fusionar,
+                    enabled: existente != null,
+                    onTap: () {
+                      if (existente != null) {
+                        widget.onCambiarAccion(AccionLinea.fusionar);
+                      } else {
+                        widget.onFusionarManual();
+                      }
+                    },
+                  ),
+                  _ChipAccion(
+                    label: 'Buscar...',
+                    icon: Icons.search,
+                    selected: false,
+                    enabled: true,
+                    onTap: widget.onFusionarManual,
+                  ),
+                  _ChipAccion(
+                    label: 'Crear nuevo',
+                    icon: Icons.add,
+                    selected: analizada.accion == AccionLinea.crearNuevo,
+                    enabled: true,
+                    onTap: () => widget.onCambiarAccion(AccionLinea.crearNuevo),
+                  ),
+                  _ChipAccion(
+                    label: 'Descartar',
+                    icon: Icons.block,
+                    selected: analizada.accion == AccionLinea.descartar,
+                    enabled: true,
+                    onTap: () => widget.onCambiarAccion(AccionLinea.descartar),
+                  ),
+                ],
+              ),
+              // Campo de precio: para crear nuevo o sumar (no para descartar)
+              if (!esDescartado) ...[
+                const SizedBox(height: 10),
+                Padding(
+                  padding: const EdgeInsets.only(left: 28),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _precioCtrl,
+                          keyboardType:
+                              const TextInputType.numberWithOptions(
+                                  decimal: true),
+                          onChanged: _emitirPrecio,
+                          decoration: InputDecoration(
+                            isDense: true,
+                            labelText: esCrearNuevo
+                                ? 'Precio por ${linea.unidad}'
+                                : 'Precio por ${linea.unidad} (este albarán)',
+                            prefixText: '€ ',
+                            hintText: '0.00',
+                            border: const OutlineInputBorder(),
+                            contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 10),
+                          ),
+                          style: const TextStyle(fontSize: 13),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Total: ${_calcularTotal(linea).toStringAsFixed(2)} €',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey.shade700,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (analizada.accion == AccionLinea.fusionar &&
+                    existente != null) ...[
+                  const SizedBox(height: 4),
+                  Padding(
+                    padding: const EdgeInsets.only(left: 28),
+                    child: Text(
+                      _textoMediaPonderada(existente, linea),
+                      style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.blue.shade700,
+                          fontStyle: FontStyle.italic),
+                    ),
+                  ),
+                ],
+              ],
+              if (etiqueta.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text('Acción: $etiqueta',
+                    style: TextStyle(
+                        fontSize: 11,
+                        color: colorBanda,
+                        fontWeight: FontWeight.w600)),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  double _calcularTotal(LineaAlbaran linea) {
+    final precio =
+        double.tryParse(_precioCtrl.text.replaceAll(',', '.')) ?? 0;
+    return precio * linea.cantidad;
+  }
+
+  String _textoMediaPonderada(Ingrediente existente, LineaAlbaran linea) {
+    final precioNuevo =
+        double.tryParse(_precioCtrl.text.replaceAll(',', '.')) ?? 0;
+    final actual = existente.costePorUnidad;
+    if (precioNuevo <= 0) {
+      return actual > 0
+          ? 'Coste actual: ${actual.toStringAsFixed(2)} €/${existente.unidad} (sin cambios)'
+          : 'Sin coste registrado';
+    }
+    if (actual <= 0) {
+      return 'Se establecerá coste: ${precioNuevo.toStringAsFixed(2)} €/${existente.unidad}';
+    }
+    if ((precioNuevo - actual).abs() < 0.005) {
+      return 'Coste: ${actual.toStringAsFixed(2)} €/${existente.unidad} (sin cambios)';
+    }
+    return 'Coste: ${actual.toStringAsFixed(2)} → ${precioNuevo.toStringAsFixed(2)} €/${existente.unidad}';
+  }
+}
+
+class _ChipAccion extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  const _ChipAccion({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.enabled,
+    required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      decoration: BoxDecoration(
-        color: SGColors.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: SGColors.border),
+    return ActionChip(
+      avatar: Icon(icon,
+          size: 16,
+          color: selected ? Colors.white : Colors.grey.shade700),
+      label: Text(label,
+          style: TextStyle(
+              fontSize: 12,
+              color: selected ? Colors.white : Colors.grey.shade800,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.normal)),
+      backgroundColor: selected ? SGColors.primary : Colors.grey.shade100,
+      onPressed: enabled ? onTap : null,
+      visualDensity: VisualDensity.compact,
+    );
+  }
+}
+
+// ============================================================
+// SELECTOR DE INGREDIENTE (para fusión manual)
+// ============================================================
+class _SelectorIngredienteSheet extends ConsumerStatefulWidget {
+  const _SelectorIngredienteSheet();
+
+  @override
+  ConsumerState<_SelectorIngredienteSheet> createState() =>
+      _SelectorIngredienteSheetState();
+}
+
+class _SelectorIngredienteSheetState
+    extends ConsumerState<_SelectorIngredienteSheet> {
+  final _searchCtrl = TextEditingController();
+  List<Ingrediente> _resultados = [];
+  bool _cargando = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _buscar('');
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _buscar(String query) async {
+    setState(() => _cargando = true);
+    try {
+      final servicio = ref.read(ingredienteServiceProvider);
+      final res = query.isEmpty
+          ? await servicio.getAll()
+          : await servicio.search(query);
+      if (mounted) {
+        setState(() {
+          _resultados = res;
+          _cargando = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _cargando = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+        left: 16,
+        right: 16,
+        top: 16,
       ),
-      child: ListTile(
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        leading: CircleAvatar(
-          backgroundColor: SGColors.primaryLight,
-          child: Text('${index + 1}',
-              style: const TextStyle(
-                  color: SGColors.primary, fontWeight: FontWeight.w700)),
-        ),
-        title: Text(
-          linea.nombreProducto.isNotEmpty
-              ? linea.nombreProducto
-              : 'Sin nombre',
-          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
-        ),
-        subtitle: Text(
-          '${linea.cantidad} ${linea.unidad}  •  ${linea.precioUnitario.toStringAsFixed(2)} €/ud',
-          style: const TextStyle(color: SGColors.textSecondary, fontSize: 12),
-        ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
+      child: SizedBox(
+        height: MediaQuery.of(context).size.height * 0.65,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            IconButton(
-              icon: const Icon(Icons.edit_outlined,
-                  color: SGColors.primary, size: 20),
-              onPressed: onEditar,
+            const Text('Selecciona ingrediente al que sumar',
+                style: TextStyle(
+                    fontWeight: FontWeight.bold, fontSize: 16)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _searchCtrl,
+              decoration: const InputDecoration(
+                hintText: 'Buscar...',
+                prefixIcon: Icon(Icons.search),
+                border: OutlineInputBorder(),
+              ),
+              onChanged: _buscar,
             ),
-            IconButton(
-              icon: const Icon(Icons.delete_outline,
-                  color: SGColors.red, size: 20),
-              onPressed: onEliminar,
+            const SizedBox(height: 12),
+            Expanded(
+              child: _cargando
+                  ? const Center(child: CircularProgressIndicator())
+                  : _resultados.isEmpty
+                      ? const Center(child: Text('Sin resultados'))
+                      : ListView.builder(
+                          itemCount: _resultados.length,
+                          itemBuilder: (_, i) {
+                            final ing = _resultados[i];
+                            return ListTile(
+                              title: Text(ing.nombre),
+                              subtitle: Text(
+                                  'Stock: ${ing.stockActual} ${ing.unidad}'),
+                              onTap: () => Navigator.pop(context, ing),
+                            );
+                          },
+                        ),
             ),
           ],
         ),
@@ -481,155 +1050,7 @@ class _LineaCard extends StatelessWidget {
 }
 
 // ============================================================
-// BARRA DE ACCIONES INFERIOR
-// ============================================================
-class _BarraAcciones extends ConsumerWidget {
-  final List<LineaAlbaran> lineas;
-  final String? proveedor;
-  final VoidCallback onAgregarLinea;
-
-  const _BarraAcciones({
-    required this.lineas,
-    this.proveedor,
-    required this.onAgregarLinea,
-  });
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-      decoration: BoxDecoration(
-        color: SGColors.surface,
-        border: const Border(top: BorderSide(color: SGColors.border)),
-      ),
-      child: Row(
-        children: [
-          // Botón añadir línea manual
-          OutlinedButton.icon(
-            onPressed: onAgregarLinea,
-            icon: const Icon(Icons.add, size: 18),
-            label: const Text('Añadir'),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: SGColors.primary,
-              side: const BorderSide(color: SGColors.primary),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12)),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            ),
-          ),
-          const SizedBox(width: 12),
-          // Botón confirmar e importar
-          Expanded(
-            child: ElevatedButton.icon(
-              onPressed: lineas.isEmpty
-                  ? null
-                  : () => _confirmarImportacion(context, ref),
-              icon: const Icon(Icons.inventory_2_outlined, size: 18),
-              label: const Text('Importar al Inventario'),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _confirmarImportacion(
-      BuildContext context, WidgetRef ref) async {
-    final confirmar = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Text('Importar mercancía'),
-        content: Text(
-            '¿Crear un pedido con ${lineas.length} productos y actualizar el inventario?\n\n'
-            'El stock de cada producto se incrementará con la cantidad indicada.'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancelar')),
-          ElevatedButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Importar')),
-        ],
-      ),
-    );
-
-    if (confirmar != true || !context.mounted) return;
-
-    // Crear pedido con las líneas escaneadas
-    try {
-      final pedidoService = ref.read(pedidoServiceProvider);
-      final ingredienteService = ref.read(ingredienteServiceProvider);
-
-      // 1. Crear el pedido en estado "recibido" (ya está en almacén)
-      final pedido = Pedido(
-        proveedor: proveedor ?? 'Proveedor (OCR)',
-        estado: 'recibido',
-        notas: 'Importado automáticamente desde albarán escaneado',
-        fechaRecibido: DateTime.now(),
-      );
-      final pedidoCreado = await pedidoService.create(pedido);
-
-      // 2. Crear las líneas del pedido
-      for (final linea in lineas) {
-        final lineaPedido = PedidoLinea(
-          pedidoId: pedidoCreado.id,
-          nombreProducto: linea.nombreProducto,
-          cantidad: linea.cantidad,
-          unidad: linea.unidad,
-          precioUnitario: linea.precioUnitario,
-          recibido: true,
-        );
-        await pedidoService.addLinea(lineaPedido);
-
-        // 3. Actualizar stock si existe el ingrediente con ese nombre
-        final ingredientes = await ingredienteService.search(linea.nombreProducto);
-        if (ingredientes.isNotEmpty) {
-          final ing = ingredientes.first;
-          final actualizado = Ingrediente(
-            nombre: ing.nombre,
-            categoria: ing.categoria,
-            stockActual: ing.stockActual + linea.cantidad,
-            stockMinimo: ing.stockMinimo,
-            unidad: ing.unidad,
-            costePorUnidad: linea.precioUnitario > 0
-                ? linea.precioUnitario
-                : ing.costePorUnidad,
-            proveedor: proveedor ?? ing.proveedor,
-            fechaCaducidad: ing.fechaCaducidad,
-            notas: ing.notas,
-          );
-          await ingredienteService.update(ing.id!, actualizado);
-        }
-      }
-
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-                '✓ ${lineas.length} productos importados correctamente'),
-            backgroundColor: SGColors.green,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-        context.pop();
-      }
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error al importar: $e'),
-            backgroundColor: SGColors.red,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      }
-    }
-  }
-}
-
-// ============================================================
-// EDITOR DE LÍNEA (Bottom Sheet)
+// EDITOR DE LÍNEA (paso 1)
 // ============================================================
 class _EditorLineaSheet extends StatefulWidget {
   final LineaAlbaran linea;
@@ -644,22 +1065,14 @@ class _EditorLineaSheet extends StatefulWidget {
 class _EditorLineaSheetState extends State<_EditorLineaSheet> {
   late final TextEditingController _nombreCtrl;
   late final TextEditingController _cantidadCtrl;
-  late final TextEditingController _precioCtrl;
   String _unidad = 'kg';
-
-  static const _unidades = [
-    'kg', 'g', 'L', 'ud', 'caja', 'bote', 'bolsa', 'saco'
-  ];
 
   @override
   void initState() {
     super.initState();
-    _nombreCtrl =
-        TextEditingController(text: widget.linea.nombreProducto);
+    _nombreCtrl = TextEditingController(text: widget.linea.nombreProducto);
     _cantidadCtrl =
         TextEditingController(text: widget.linea.cantidad.toString());
-    _precioCtrl =
-        TextEditingController(text: widget.linea.precioUnitario.toString());
     _unidad = widget.linea.unidad;
   }
 
@@ -667,95 +1080,60 @@ class _EditorLineaSheetState extends State<_EditorLineaSheet> {
   void dispose() {
     _nombreCtrl.dispose();
     _cantidadCtrl.dispose();
-    _precioCtrl.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: EdgeInsets.only(
-        left: 20,
-        right: 20,
-        top: 20,
-        bottom: MediaQuery.of(context).viewInsets.bottom + 20,
-      ),
+      padding: const EdgeInsets.all(20),
       child: Column(
         mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Center(
-            child: Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                  color: SGColors.border,
-                  borderRadius: BorderRadius.circular(2)),
-            ),
-          ),
-          const SizedBox(height: 16),
-          Text('Editar producto',
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  )),
-          const SizedBox(height: 20),
           TextField(
-            controller: _nombreCtrl,
-            decoration: const InputDecoration(labelText: 'Nombre del producto'),
-            textCapitalization: TextCapitalization.sentences,
-          ),
+              controller: _nombreCtrl,
+              decoration: const InputDecoration(labelText: 'Nombre')),
           const SizedBox(height: 12),
           Row(
             children: [
               Expanded(
                 child: TextField(
                   controller: _cantidadCtrl,
-                  decoration: const InputDecoration(labelText: 'Cantidad'),
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(labelText: 'Cantidad'),
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
                 child: DropdownButtonFormField<String>(
                   initialValue: _unidad,
-                  decoration: const InputDecoration(labelText: 'Unidad'),
-                  items: _unidades
-                      .map((u) => DropdownMenuItem(value: u, child: Text(u)))
+                  items: ['kg', 'L', 'ud']
+                      .map((u) =>
+                          DropdownMenuItem(value: u, child: Text(u)))
                       .toList(),
                   onChanged: (v) => setState(() => _unidad = v ?? _unidad),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _precioCtrl,
-            decoration: const InputDecoration(
-              labelText: 'Precio unitario (€)',
-              prefixText: '€ ',
-            ),
-            keyboardType:
-                const TextInputType.numberWithOptions(decimal: true),
-          ),
           const SizedBox(height: 24),
           SizedBox(
             width: double.infinity,
-            height: 52,
+            height: 48,
             child: ElevatedButton(
               onPressed: () {
+                final cantidad = double.tryParse(
+                        _cantidadCtrl.text.replaceAll(',', '.')) ??
+                    widget.linea.cantidad;
                 widget.onGuardar(widget.linea.copyWith(
                   nombreProducto: _nombreCtrl.text.trim(),
-                  cantidad:
-                      double.tryParse(_cantidadCtrl.text.replaceAll(',', '.')) ??
-                          widget.linea.cantidad,
+                  cantidad: cantidad,
                   unidad: _unidad,
-                  precioUnitario:
-                      double.tryParse(_precioCtrl.text.replaceAll(',', '.')) ??
-                          widget.linea.precioUnitario,
                 ));
+                Navigator.pop(context);
               },
-              child: const Text('Guardar cambios'),
+              child: const Text('Guardar'),
             ),
           ),
         ],
@@ -770,31 +1148,23 @@ class _EditorLineaSheetState extends State<_EditorLineaSheet> {
 class _VistaError extends StatelessWidget {
   final String mensaje;
   final VoidCallback onReintentar;
-
   const _VistaError({required this.mensaje, required this.onReintentar});
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.all(32),
+      padding: const EdgeInsets.all(24),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const Icon(Icons.error_outline, color: SGColors.red, size: 72),
+          const Icon(Icons.error_outline,
+              size: 64, color: Colors.redAccent),
+          const SizedBox(height: 16),
+          Text(mensaje, textAlign: TextAlign.center),
           const SizedBox(height: 24),
-          Text('No se pudo procesar',
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  )),
-          const SizedBox(height: 12),
-          Text(mensaje,
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: SGColors.textSecondary)),
-          const SizedBox(height: 32),
-          ElevatedButton.icon(
+          ElevatedButton(
             onPressed: onReintentar,
-            icon: const Icon(Icons.refresh),
-            label: const Text('Intentar de nuevo'),
+            child: const Text('Reintentar'),
           ),
         ],
       ),

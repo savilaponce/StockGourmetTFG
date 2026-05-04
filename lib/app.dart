@@ -9,11 +9,15 @@ import 'screens/home/home_screen.dart';
 import 'screens/home/alertas_screen.dart';
 import 'screens/home/ajustes_screen.dart';
 import 'screens/home/personal_screen.dart';
+import 'screens/home/mas_screen.dart';
+import 'screens/buscar/buscar_screen.dart';
 import 'screens/inventario/inventario_screen.dart';
 import 'screens/inventario/ingrediente_form_screen.dart';
+import 'screens/inventario/albaran_scanner_screen.dart'; // ← NUEVO
 import 'screens/platos/platos_screen.dart';
 import 'screens/platos/plato_form_screen.dart';
 import 'screens/platos/plato_detail_screen.dart';
+import 'screens/inventario/platos_por_ingrediente_screen.dart';
 import 'screens/pedidos/pedidos_screen.dart';
 import 'screens/pedidos/pedido_form_screen.dart';
 import 'screens/pedidos/pedido_detail_screen.dart';
@@ -46,7 +50,8 @@ final routerProvider = Provider<GoRouter>((ref) {
     redirect: (context, state) {
       final session = authState.value?.session;
       final isLoggedIn = session != null;
-      final isAuthRoute = state.matchedLocation == '/login' || state.matchedLocation == '/register';
+      final isAuthRoute = state.matchedLocation == '/login' ||
+          state.matchedLocation == '/register';
       if (!isLoggedIn && !isAuthRoute) return '/login';
       if (isLoggedIn && isAuthRoute) return '/';
       return null;
@@ -57,23 +62,71 @@ final routerProvider = Provider<GoRouter>((ref) {
       ShellRoute(
         builder: (c, s, child) => HomeScreen(child: child),
         routes: [
-          GoRoute(path: '/', pageBuilder: (c, s) => const NoTransitionPage(child: DashboardTab())),
-          GoRoute(path: '/inventario', pageBuilder: (c, s) => const NoTransitionPage(child: InventarioScreen())),
-          GoRoute(path: '/pedidos', pageBuilder: (c, s) => const NoTransitionPage(child: PedidosScreen())),
-          GoRoute(path: '/alertas', pageBuilder: (c, s) => const NoTransitionPage(child: AlertasScreen())),
-          GoRoute(path: '/ajustes', pageBuilder: (c, s) => const NoTransitionPage(child: AjustesScreen())),
+          GoRoute(
+              path: '/',
+              pageBuilder: (c, s) =>
+                  const NoTransitionPage(child: DashboardTab())),
+          GoRoute(
+              path: '/inventario',
+              pageBuilder: (c, s) =>
+                  const NoTransitionPage(child: InventarioScreen())),
+          GoRoute(
+              path: '/pedidos',
+              pageBuilder: (c, s) =>
+                  const NoTransitionPage(child: PedidosScreen())),
+          GoRoute(
+              path: '/alertas',
+              pageBuilder: (c, s) =>
+                  const NoTransitionPage(child: AlertasScreen())),
+          GoRoute(
+              path: '/mas',
+              pageBuilder: (c, s) =>
+                  const NoTransitionPage(child: MasScreen())),
+          GoRoute(
+              path: '/ajustes',
+              pageBuilder: (c, s) =>
+                  const NoTransitionPage(child: AjustesScreen())),
         ],
       ),
-      GoRoute(path: '/ingrediente/nuevo', builder: (c, s) => const IngredienteFormScreen()),
-      GoRoute(path: '/ingrediente/editar/:id', builder: (c, s) => IngredienteFormScreen(ingredienteId: s.pathParameters['id'])),
-      GoRoute(path: '/plato/nuevo', builder: (c, s) => const PlatoFormScreen()),
-      GoRoute(path: '/plato/editar/:id', builder: (c, s) => PlatoFormScreen(platoId: s.pathParameters['id'])),
-      GoRoute(path: '/plato/:id', builder: (c, s) => PlatoDetailScreen(platoId: s.pathParameters['id']!)),
+      GoRoute(
+          path: '/ingrediente/nuevo',
+          builder: (c, s) => const IngredienteFormScreen()),
+      GoRoute(
+          path: '/ingrediente/editar/:id',
+          builder: (c, s) =>
+              IngredienteFormScreen(ingredienteId: s.pathParameters['id'])),
+      GoRoute(
+          path: '/ingrediente/:id/platos',
+          builder: (c, s) => PlatosPorIngredienteScreen(
+              ingredienteId: s.pathParameters['id']!)),
+      // ── OCR ──────────────────────────────────────────────────
+      GoRoute(
+          path: '/albaran/scanner',
+          builder: (c, s) => const AlbaranScannerScreen()),
+      // ─────────────────────────────────────────────────────────
+      GoRoute(
+          path: '/plato/nuevo', builder: (c, s) => const PlatoFormScreen()),
+      GoRoute(
+          path: '/plato/editar/:id',
+          builder: (c, s) =>
+              PlatoFormScreen(platoId: s.pathParameters['id'])),
+      GoRoute(
+          path: '/plato/:id',
+          builder: (c, s) =>
+              PlatoDetailScreen(platoId: s.pathParameters['id']!)),
       GoRoute(path: '/platos', builder: (c, s) => const PlatosScreen()),
       GoRoute(path: '/personal', builder: (c, s) => const PersonalScreen()),
-      GoRoute(path: '/pedido/nuevo', builder: (c, s) => const PedidoFormScreen()),
-      GoRoute(path: '/pedido/:id', builder: (c, s) => PedidoDetailScreen(pedidoId: s.pathParameters['id']!)),
-      GoRoute(path: '/proveedores', builder: (c, s) => const ProveedoresScreen()),
+      GoRoute(path: '/buscar', builder: (c, s) => const BuscarScreen()),
+      GoRoute(
+          path: '/pedido/nuevo',
+          builder: (c, s) => const PedidoFormScreen()),
+      GoRoute(
+          path: '/pedido/:id',
+          builder: (c, s) =>
+              PedidoDetailScreen(pedidoId: s.pathParameters['id']!)),
+      GoRoute(
+          path: '/proveedores',
+          builder: (c, s) => const ProveedoresScreen()),
     ],
   );
 });
@@ -100,43 +153,77 @@ class StockGourmetApp extends ConsumerWidget {
         useMaterial3: true,
         scaffoldBackgroundColor: SGColors.background,
         colorScheme: ColorScheme.fromSeed(
-          seedColor: SGColors.primary, brightness: Brightness.light,
-          primary: SGColors.primary, secondary: SGColors.orange,
-          surface: SGColors.surface, error: SGColors.red,
+          seedColor: SGColors.primary,
+          brightness: Brightness.light,
+          primary: SGColors.primary,
+          secondary: SGColors.orange,
+          surface: SGColors.surface,
+          error: SGColors.red,
         ),
         textTheme: GoogleFonts.poppinsTextTheme(),
         appBarTheme: AppBarTheme(
-          centerTitle: false, elevation: 0, scrolledUnderElevation: 0,
-          backgroundColor: SGColors.surface, foregroundColor: SGColors.textPrimary,
-          titleTextStyle: GoogleFonts.poppins(fontSize: 22, fontWeight: FontWeight.w700, color: SGColors.textPrimary),
+          centerTitle: false,
+          elevation: 0,
+          scrolledUnderElevation: 0,
+          backgroundColor: SGColors.surface,
+          foregroundColor: SGColors.textPrimary,
+          titleTextStyle: GoogleFonts.poppins(
+              fontSize: 22,
+              fontWeight: FontWeight.w700,
+              color: SGColors.textPrimary),
         ),
-        cardTheme: CardThemeData(elevation: 0, color: SGColors.surface, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
+        cardTheme: CardThemeData(
+            elevation: 0,
+            color: SGColors.surface,
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16))),
         navigationBarTheme: NavigationBarThemeData(
-          backgroundColor: SGColors.surface, elevation: 8, indicatorColor: SGColors.primaryLight,
+          backgroundColor: SGColors.surface,
+          elevation: 8,
+          indicatorColor: SGColors.primaryLight,
           labelTextStyle: WidgetStateProperty.resolveWith((states) {
             final sel = states.contains(WidgetState.selected);
-            return GoogleFonts.poppins(fontSize: 12, fontWeight: sel ? FontWeight.w600 : FontWeight.w400, color: sel ? SGColors.primary : SGColors.textHint);
+            return GoogleFonts.poppins(
+                fontSize: 12,
+                fontWeight: sel ? FontWeight.w600 : FontWeight.w400,
+                color: sel ? SGColors.primary : SGColors.textHint);
           }),
           iconTheme: WidgetStateProperty.resolveWith((states) {
             final sel = states.contains(WidgetState.selected);
-            return IconThemeData(color: sel ? SGColors.primary : SGColors.textHint, size: 24);
+            return IconThemeData(
+                color: sel ? SGColors.primary : SGColors.textHint, size: 24);
           }),
         ),
         elevatedButtonTheme: ElevatedButtonThemeData(
           style: ElevatedButton.styleFrom(
-            backgroundColor: SGColors.primary, foregroundColor: Colors.white, elevation: 0,
-            padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-            textStyle: GoogleFonts.poppins(fontSize: 16, fontWeight: FontWeight.w600),
+            backgroundColor: SGColors.primary,
+            foregroundColor: Colors.white,
+            elevation: 0,
+            padding:
+                const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14)),
+            textStyle: GoogleFonts.poppins(
+                fontSize: 16, fontWeight: FontWeight.w600),
           ),
         ),
         inputDecorationTheme: InputDecorationTheme(
-          filled: true, fillColor: SGColors.surface,
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: SGColors.border)),
-          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: SGColors.border)),
-          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: SGColors.primary, width: 2)),
-          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-          hintStyle: GoogleFonts.poppins(color: SGColors.textHint, fontSize: 14),
+          filled: true,
+          fillColor: SGColors.surface,
+          border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: const BorderSide(color: SGColors.border)),
+          enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: const BorderSide(color: SGColors.border)),
+          focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide:
+                  const BorderSide(color: SGColors.primary, width: 2)),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+          hintStyle:
+              GoogleFonts.poppins(color: SGColors.textHint, fontSize: 14),
         ),
       ),
     );

@@ -3,90 +3,232 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app.dart';
 import '../../models/models.dart';
-import '../../services/ingrediente_service.dart';
-import '../../utils/formatters.dart';
+import '../../services/alertas_service.dart';
 
-class AlertasScreen extends ConsumerWidget {
+class AlertasScreen extends ConsumerStatefulWidget {
   const AlertasScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final caducidadAsync = ref.watch(ingredientesPorCaducarProvider);
+  ConsumerState<AlertasScreen> createState() => _AlertasScreenState();
+}
+
+class _AlertasScreenState extends ConsumerState<AlertasScreen> {
+  // null = todas
+  TipoAlerta? _filtro;
+
+  @override
+  Widget build(BuildContext context) {
+    final alertasAsync = ref.watch(alertasProvider(_filtro));
 
     return Scaffold(
       backgroundColor: SGColors.background,
       appBar: AppBar(
         backgroundColor: SGColors.surface,
         title: const Text('Alertas y Notificaciones'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Refrescar',
+            onPressed: () {
+              ref.invalidate(alertasProvider);
+              ref.invalidate(resumenAlertasProvider);
+            },
+          ),
+        ],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(52),
+          child: SizedBox(
+            height: 52,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              children: [
+                _ChipFiltro(
+                  label: 'Todas',
+                  selected: _filtro == null,
+                  onTap: () => setState(() => _filtro = null),
+                ),
+                _ChipFiltro(
+                  label: 'Caducadas',
+                  selected: _filtro == TipoAlerta.caducidadVencida,
+                  onTap: () =>
+                      setState(() => _filtro = TipoAlerta.caducidadVencida),
+                  color: SGColors.red,
+                ),
+                _ChipFiltro(
+                  label: 'Caducan pronto',
+                  selected: _filtro == TipoAlerta.caducidadCritica,
+                  onTap: () =>
+                      setState(() => _filtro = TipoAlerta.caducidadCritica),
+                  color: SGColors.orange,
+                ),
+                _ChipFiltro(
+                  label: 'Próximos a caducar',
+                  selected: _filtro == TipoAlerta.caducidadProxima,
+                  onTap: () =>
+                      setState(() => _filtro = TipoAlerta.caducidadProxima),
+                ),
+                _ChipFiltro(
+                  label: 'Sin stock',
+                  selected: _filtro == TipoAlerta.stockCritico,
+                  onTap: () =>
+                      setState(() => _filtro = TipoAlerta.stockCritico),
+                  color: SGColors.red,
+                ),
+                _ChipFiltro(
+                  label: 'Stock bajo',
+                  selected: _filtro == TipoAlerta.stockBajo,
+                  onTap: () => setState(() => _filtro = TipoAlerta.stockBajo),
+                  color: SGColors.orange,
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
       body: RefreshIndicator(
         color: SGColors.primary,
         onRefresh: () async {
-          ref.invalidate(ingredientesPorCaducarProvider);
+          ref.invalidate(alertasProvider);
+          ref.invalidate(resumenAlertasProvider);
         },
-        child: caducidadAsync.when(
+        child: alertasAsync.when(
           data: (items) => items.isEmpty
-              ? const Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.notifications_off_outlined,
-                          size: 64, color: SGColors.textHint),
-                      SizedBox(height: 16),
-                      Text('Sin alertas',
-                          style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.w600,
-                              color: SGColors.textPrimary)),
-                      SizedBox(height: 4),
-                      Text('Todo tu inventario está en orden',
-                          style: TextStyle(color: SGColors.textSecondary)),
-                    ],
-                  ),
-                )
+              ? _VistaSinAlertas(filtroActivo: _filtro != null)
               : ListView.builder(
                   padding: const EdgeInsets.all(16),
                   itemCount: items.length,
-                  itemBuilder: (context, i) =>
-                      _AlertaTile(ingrediente: items[i]),
+                  itemBuilder: (context, i) => _AlertaTile(alerta: items[i]),
                 ),
           loading: () => const Center(
               child: CircularProgressIndicator(color: SGColors.primary)),
-          error: (e, _) => Center(child: Text('Error: $e')),
+          error: (e, _) => Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text('Error cargando alertas: $e',
+                  textAlign: TextAlign.center),
+            ),
+          ),
         ),
       ),
     );
   }
 }
 
-class _AlertaTile extends StatelessWidget {
-  final Ingrediente ingrediente;
-  const _AlertaTile({required this.ingrediente});
+// ============================================================
+// CHIP DE FILTRO
+// ============================================================
+class _ChipFiltro extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  final Color? color;
+
+  const _ChipFiltro({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    this.color,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final dias = ingrediente.diasRestantes ?? 0;
-    final caducado = dias < 0;
-    final critico = dias <= 3 && !caducado;
+    final c = color ?? SGColors.primary;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+      child: ChoiceChip(
+        label: Text(label),
+        selected: selected,
+        onSelected: (_) => onTap(),
+        selectedColor: c.withValues(alpha: 0.18),
+        labelStyle: TextStyle(
+          fontSize: 12,
+          fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+          color: selected ? c : SGColors.textSecondary,
+        ),
+        side: BorderSide(
+          color: selected ? c : Colors.grey.shade300,
+        ),
+      ),
+    );
+  }
+}
 
-    final Color accentColor = caducado
-        ? SGColors.red
-        : critico
-            ? SGColors.orange
-            : const Color(0xFFEAB308);
+// ============================================================
+// VISTA SIN ALERTAS
+// ============================================================
+class _VistaSinAlertas extends StatelessWidget {
+  final bool filtroActivo;
+  const _VistaSinAlertas({required this.filtroActivo});
 
-    final String tipo = caducado
-        ? 'Caducado'
-        : critico
-            ? 'Próximo a Caducar'
-            : 'Atención';
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      children: [
+        const SizedBox(height: 120),
+        const Icon(Icons.notifications_off_outlined,
+            size: 64, color: SGColors.textHint),
+        const SizedBox(height: 16),
+        Center(
+          child: Text(
+            filtroActivo ? 'Sin alertas de este tipo' : 'Sin alertas',
+            style: const TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w600,
+              color: SGColors.textPrimary,
+            ),
+          ),
+        ),
+        const SizedBox(height: 4),
+        const Center(
+          child: Text(
+            'Todo tu inventario está en orden',
+            style: TextStyle(color: SGColors.textSecondary),
+          ),
+        ),
+      ],
+    );
+  }
+}
 
-    final IconData icono = caducado
-        ? Icons.error_outline
-        : critico
-            ? Icons.warning_amber_rounded
-            : Icons.schedule;
+// ============================================================
+// TARJETA DE ALERTA
+// ============================================================
+class _AlertaTile extends StatelessWidget {
+  final Alerta alerta;
+  const _AlertaTile({required this.alerta});
 
+  Color _color() {
+    switch (alerta.severidad) {
+      case 1:
+        return SGColors.red;
+      case 2:
+        return SGColors.orange;
+      default:
+        return const Color(0xFFEAB308);
+    }
+  }
+
+  IconData _icono() {
+    switch (alerta.tipo) {
+      case TipoAlerta.caducidadVencida:
+        return Icons.error_outline;
+      case TipoAlerta.caducidadCritica:
+        return Icons.warning_amber_rounded;
+      case TipoAlerta.caducidadProxima:
+        return Icons.schedule;
+      case TipoAlerta.stockCritico:
+        return Icons.remove_shopping_cart_outlined;
+      case TipoAlerta.stockBajo:
+        return Icons.inventory_2_outlined;
+      case TipoAlerta.desconocido:
+        return Icons.notifications_outlined;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _color();
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(16),
@@ -106,35 +248,27 @@ class _AlertaTile extends StatelessWidget {
           Container(
             padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
-              color: accentColor.withValues(alpha: 0.12),
+              color: color.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(12),
             ),
-            child: Icon(icono, color: accentColor, size: 22),
+            child: Icon(_icono(), color: color, size: 22),
           ),
           const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    Text(tipo,
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                          color: accentColor,
-                        )),
-                    const Spacer(),
-                    Text(Formatters.date(ingrediente.fechaCaducidad),
-                        style: const TextStyle(
-                            fontSize: 11, color: SGColors.textHint)),
-                  ],
+                Text(
+                  alerta.titulo,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: color,
+                  ),
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  caducado
-                      ? "'${ingrediente.nombre}' caducó hace ${dias.abs()} días"
-                      : "'${ingrediente.nombre}' caduca en $dias días",
+                  alerta.mensaje,
                   style: const TextStyle(
                       fontSize: 14, color: SGColors.textPrimary),
                 ),
@@ -142,7 +276,8 @@ class _AlertaTile extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          const Icon(Icons.chevron_right, color: SGColors.textHint, size: 20),
+          const Icon(Icons.chevron_right,
+              color: SGColors.textHint, size: 20),
         ],
       ),
     );

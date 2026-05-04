@@ -150,6 +150,40 @@ class PlatoService {
       );
     }
   }
+
+  /// Devuelve los platos que usan un ingrediente concreto.
+  /// Útil para "qué platos se ven afectados si elimino este ingrediente"
+  /// o desde el swipe del inventario.
+  Future<List<Plato>> getPlatosByIngrediente(String ingredienteId) async {
+    final data = await _supabase
+        .from('plato_ingredientes')
+        .select('platos(*)')
+        .eq('ingrediente_id', ingredienteId);
+
+    final platos = <Plato>[];
+    for (final row in (data as List)) {
+      final plato = row['platos'] as Map<String, dynamic>?;
+      if (plato != null) {
+        platos.add(Plato.fromJson(plato));
+      }
+    }
+    return platos;
+  }
+
+  /// Buscar platos por nombre (case-insensitive).
+  Future<List<Plato>> search(String query) async {
+    if (query.trim().isEmpty) return [];
+    final data = await _supabase
+        .from('platos')
+        .select()
+        .eq('activo', true)
+        .ilike('nombre', '%${query.trim()}%')
+        .order('nombre')
+        .limit(20);
+    return (data as List)
+        .map((json) => Plato.fromJson(json as Map<String, dynamic>))
+        .toList();
+  }
 }
 
 // ============================================================
@@ -173,6 +207,15 @@ final platoIngredientesProvider =
   (ref, platoId) async {
     final service = ref.read(platoServiceProvider);
     return service.getIngredientes(platoId);
+  },
+);
+
+/// Platos que usan un ingrediente concreto.
+final platosPorIngredienteProvider =
+    FutureProvider.family<List<Plato>, String>(
+  (ref, ingredienteId) async {
+    final service = ref.read(platoServiceProvider);
+    return service.getPlatosByIngrediente(ingredienteId);
   },
 );
 
